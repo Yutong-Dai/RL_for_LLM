@@ -1,0 +1,288 @@
+\section{Implicit Reward in Direct Preference Optimization}
+
+Direct Preference Optimization (DPO) does not explicitly train a separate reward model. Instead, it implicitly defines a reward function through the relationship between the optimized policy and the reference policy.
+
+DPO can be derived from the KL-regularized RLHF objective:
+\[
+    \max_{\pi}
+    \mathbb{E}_{y\sim \pi(\cdot\mid x)}
+    \left[
+        r(x,y)
+    \right]
+    -
+    \beta
+    D_{\mathrm{KL}}
+    \left(
+        \pi(\cdot\mid x)
+        \middle\|
+        \pi_{\mathrm{ref}}(\cdot\mid x)
+    \right),
+\]
+where $\pi_{\mathrm{ref}}$ is a fixed reference policy, usually the supervised fine-tuned model, and $\beta>0$ controls the strength of the KL regularization.
+
+The optimal policy of this objective satisfies
+\[
+    \pi^\star(y\mid x)
+    =
+    \frac{1}{Z(x)}
+    \pi_{\mathrm{ref}}(y\mid x)
+    \exp
+    \left(
+        \frac{1}{\beta} r(x,y)
+    \right),
+\]
+where $Z(x)$ is the partition function depending only on the prompt $x$.
+
+Solving for the reward gives
+\[
+    r(x,y)
+    =
+    \beta
+    \log
+    \frac{
+        \pi^\star(y\mid x)
+    }{
+        \pi_{\mathrm{ref}}(y\mid x)
+    }
+    +
+    \beta \log Z(x).
+\]
+Since $\beta\log Z(x)$ depends only on the prompt $x$, it cancels when comparing two responses to the same prompt. Therefore, DPO uses the following implicit reward parameterization:
+\[
+    r_\theta(x,y)
+    =
+    \beta
+    \log
+    \frac{
+        \pi_\theta(y\mid x)
+    }{
+        \pi_{\mathrm{ref}}(y\mid x)
+    }
+    +
+    C(x),
+\]
+where $C(x)$ is a prompt-dependent constant.
+
+For a preferred response $y_w$ and a rejected response $y_l$, the reward difference is
+\[
+\begin{aligned}
+    r_\theta(x,y_w)-r_\theta(x,y_l)
+    &=
+    \beta
+    \left[
+        \log
+        \frac{
+            \pi_\theta(y_w\mid x)
+        }{
+            \pi_{\mathrm{ref}}(y_w\mid x)
+        }
+        -
+        \log
+        \frac{
+            \pi_\theta(y_l\mid x)
+        }{
+            \pi_{\mathrm{ref}}(y_l\mid x)
+        }
+    \right] \\
+    &=
+    \beta
+    \left[
+        \log \pi_\theta(y_w\mid x)
+        -
+        \log \pi_\theta(y_l\mid x)
+        -
+        \log \pi_{\mathrm{ref}}(y_w\mid x)
+        +
+        \log \pi_{\mathrm{ref}}(y_l\mid x)
+    \right].
+\end{aligned}
+\]
+Thus, the implicit reward in DPO measures how much the optimized policy increases the probability of a response relative to the reference policy.
+
+\subsection{DPO Objective}
+
+DPO is trained on preference data of the form
+\[
+    (x,y_w,y_l)\sim \mathcal{D},
+\]
+where $x$ is the prompt, $y_w$ is the preferred response, and $y_l$ is the rejected response.
+
+The DPO loss is
+\[
+    \mathcal{L}_{\mathrm{DPO}}(\theta)
+    =
+    -
+    \mathbb{E}_{(x,y_w,y_l)\sim\mathcal{D}}
+    \left[
+        \log \sigma
+        \left(
+            \beta
+            \left[
+                \log
+                \frac{
+                    \pi_\theta(y_w\mid x)
+                }{
+                    \pi_{\mathrm{ref}}(y_w\mid x)
+                }
+                -
+                \log
+                \frac{
+                    \pi_\theta(y_l\mid x)
+                }{
+                    \pi_{\mathrm{ref}}(y_l\mid x)
+                }
+            \right]
+        \right)
+    \right],
+\]
+where $\sigma(\cdot)$ is the sigmoid function.
+
+Define
+\[
+    \Delta_\theta(x,y_w,y_l)
+    =
+    \log
+    \frac{
+        \pi_\theta(y_w\mid x)
+    }{
+        \pi_{\mathrm{ref}}(y_w\mid x)
+    }
+    -
+    \log
+    \frac{
+        \pi_\theta(y_l\mid x)
+    }{
+        \pi_{\mathrm{ref}}(y_l\mid x)
+    }.
+\]
+Then the DPO loss can be written compactly as
+\[
+    \mathcal{L}_{\mathrm{DPO}}(\theta)
+    =
+    -
+    \mathbb{E}_{(x,y_w,y_l)\sim\mathcal{D}}
+    \left[
+        \log \sigma
+        \left(
+            \beta \Delta_\theta(x,y_w,y_l)
+        \right)
+    \right].
+\]
+
+Minimizing this loss increases the relative log-probability of the preferred response over the rejected response, after correcting for their probabilities under the reference policy.
+
+\subsection{Reward Hacking in DPO}
+
+DPO does not use an explicit reward model during optimization. Therefore, it is less likely to suffer from the classical online reward hacking problem in PPO-style RLHF, where the policy repeatedly exploits weaknesses of a learned reward model.
+
+However, DPO can still suffer from a different form of reward hacking or over-optimization. Since the implicit reward is determined by the preference dataset,
+\[
+    (x,y_w,y_l)\sim \mathcal{D},
+\]
+DPO may exploit biases or artifacts in the preference data.
+
+In this sense, DPO does not hack an explicit reward model. Instead, it may overfit or exploit the implicit preference signal encoded in the dataset:
+\[
+    \text{DPO may hack the preference dataset rather than a learned reward model.}
+\]
+
+For example, if preferred responses are systematically longer than rejected responses, the model may learn the spurious rule
+\[
+    \text{longer response} \Rightarrow \text{better response}.
+\]
+If preferred responses often contain certain stylistic patterns, the model may learn to imitate those patterns even when they do not improve semantic quality.
+
+Thus, DPO can still exhibit reward-hacking-like behavior through preference-data bias, distribution shift, or over-optimization of the implicit reward.
+
+\subsection{Common Failure Modes of DPO}
+
+A common failure mode of DPO is length bias. The sequence log-probability is
+\[
+    \log \pi_\theta(y\mid x)
+    =
+    \sum_{t=1}^{|y|}
+    \log \pi_\theta(y_t\mid x,y_{<t}).
+\]
+If preferred responses are usually longer than rejected responses, the model may learn to favor longer responses, even when they are not more accurate or helpful.
+
+Another failure mode is style bias. If preferred responses share superficial stylistic features, such as excessive politeness, rigid formatting, or repeated templates, DPO may learn these features as proxies for quality.
+
+DPO may also overfit to easy negatives. If the rejected response $y_l$ is much worse than the preferred response $y_w$, the model only learns a coarse distinction:
+\[
+    y_w \gg y_l.
+\]
+This may not teach the model how to distinguish between two high-quality responses.
+
+Finally, DPO is an offline preference optimization method. It is trained on fixed preference data, but after training, the model generates responses from its own policy:
+\[
+    y\sim \pi_\theta(\cdot\mid x).
+\]
+If this generation distribution differs significantly from the training preference data distribution, DPO may suffer from distribution shift.
+
+\subsection{Mitigating Reward Hacking and Over-Optimization in DPO}
+
+One important mitigation is improving the quality of the preference data. The preference dataset should minimize spurious correlations between preference labels and superficial features such as length, format, or style. Ideally, the preference label should reflect semantic quality rather than dataset artifacts.
+
+To reduce length bias, one can use length-normalized log-probabilities. Instead of using
+\[
+    \log \pi_\theta(y\mid x)
+    =
+    \sum_{t=1}^{|y|}
+    \log \pi_\theta(y_t\mid x,y_{<t}),
+\]
+one may use the average log-probability
+\[
+    \frac{1}{|y|}
+    \log \pi_\theta(y\mid x)
+    =
+    \frac{1}{|y|}
+    \sum_{t=1}^{|y|}
+    \log \pi_\theta(y_t\mid x,y_{<t}).
+\]
+
+Another mitigation is tuning the temperature parameter $\beta$. The parameter $\beta$ controls the strength of the preference margin in the DPO loss:
+\[
+    \log \sigma
+    \left(
+        \beta \Delta_\theta(x,y_w,y_l)
+    \right).
+\]
+If $\beta$ is too large, the optimization may aggressively separate preferred and rejected responses, increasing the risk of over-optimization. A smaller $\beta$ makes the update more conservative.
+
+One can also monitor or explicitly regularize the divergence from the reference model:
+\[
+    D_{\mathrm{KL}}
+    \left(
+        \pi_\theta
+        \middle\|
+        \pi_{\mathrm{ref}}
+    \right).
+\]
+Although DPO already uses the reference policy in its objective, explicit KL monitoring or early stopping can help prevent excessive drift from the reference model.
+
+Another practical method is to mix the DPO loss with a supervised fine-tuning loss:
+\[
+    \mathcal{L}(\theta)
+    =
+    \mathcal{L}_{\mathrm{DPO}}(\theta)
+    +
+    \lambda_{\mathrm{SFT}}
+    \mathcal{L}_{\mathrm{SFT}}(\theta),
+\]
+where
+\[
+    \mathcal{L}_{\mathrm{SFT}}(\theta)
+    =
+    -
+    \mathbb{E}_{(x,y_w)\sim\mathcal{D}}
+    \left[
+        \log \pi_\theta(y_w\mid x)
+    \right].
+\]
+The SFT loss helps preserve language quality, instruction-following behavior, and formatting stability.
+
+Finally, iterative preference data collection can reduce distribution shift. Instead of training only on a fixed offline dataset, one can repeatedly sample responses from the current policy,
+\[
+    y\sim \pi_\theta(\cdot\mid x),
+\]
+collect new preference labels, and continue preference optimization on data closer to the current model distribution.

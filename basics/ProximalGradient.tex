@@ -1,0 +1,135 @@
+\section{Policy Gradient}
+
+The goal of the policy-based RL is to maximize the expected reward 
+
+\begin{align}
+    \max \left\{\Jcal(\theta):= \Embb_{\tau\sim \pi_{\theta}}\left[ R(\tau)\right] = \int P(\tau|\theta)R(\tau) d\tau\right\},
+\end{align}
+where $P(\tau|\theta)$ is defined in \eqref{eq:prob.of.a.trajectory} and $s_0\sim \rho_0(\cdot)$
+\begin{itemize}
+    \item $a_t\sim \pi_{\theta}(\cdot | s_t)$ for all $t\in \{0, 1, \ldots, T-1\}$.
+    \item $s_{t+1} \sim P(\cdot | s_t, a_t)$ for all $t\in \{0, 1, \ldots, T-1\}$.
+    \item $r_t=R(s_t,a_t, s_{t+1})$ for all $t\in \{0, 1, \ldots, T-1\}$.
+\end{itemize}
+
+Applying \eqref{eq:prob.of.a.trajectory} and \eqref{eq:log.derivative.trick}, we get 
+\begin{align}
+    \grad_{\theta} \Jcal(\theta) 
+    & = \int \grad_{\theta} P(\tau|\theta)R(\tau) d\tau = \int  P(\tau|\theta) \grad_{\theta}\log  P(\tau|\theta)R(\tau) d\tau = \Embb_{\tau\sim \pi_{\theta}}\left[ \grad_{\theta}\log P(\tau|\theta)R(\tau)\right] \nonumber\\
+    & = \Embb_{\tau\sim \pi_{\theta}}\left[ \grad_{\theta}\left(\rho_0\left(s_0\right) + \sum_{t=0}^{T-1} P\left(s_{t+1} | s_t, a_t\right)\right) + \sum_{t=0}^{T-1}\grad_{\theta} \log \pi_\theta\left(a_t | s_t\right)\right] R(\tau) \nonumber\\
+    & = \Embb_{\tau\sim \pi_{\theta}}\left[ R(\tau) \sum_{t=0}^{T-1}\grad_{\theta} \log \pi_\theta\left(a_t | s_t\right)\right] \label{eq:policy.grad}
+\end{align}
+
+
+
+\subsection{Policy Gradient Estimator}
+
+Given $N$ trajectories $\{\tau_1, \ldots, \tau_N\}$ with $\tau_n\sim \pi_{\theta}$ for all $n\in [N]$, how can we construct a "good" policy gradient estimator?
+
+The natural choice would be
+\begin{itemize}
+    \item Naive unbiased estimator
+    $$
+    \widetilde{\grad_{\theta} \Jcal(\theta)}  = \frac{1}{N}\sum_{n=1}^{N} \left(  \sum_{t=0}^{T_{n}-1} R(\tau_n) \grad_{\theta} \log \pi_\theta\left(a_t | s_t\right) \right)
+    $$
+\end{itemize}
+However, the above looks a bit weird in the sense that $\log \pi_\theta\left(a_t | s_t\right)$ contains single-step probability while $R(\tau_n)$ represents the whole trajectory. This naturally leads to the following abstraction
+ $$
+    \widetilde{\grad_{\theta} \Jcal(\theta)}  = \frac{1}{N}\sum_{n=1}^{N} \left(  \sum_{t=0}^{T_{n}-1} \Phi_t \grad_{\theta} \log \pi_\theta\left(a_t | s_t\right) \right)
+$$
+Some popular choices of $\Phi_t$\citep{schulman2015high}, hence the gradient estimator can be
+\begin{itemize}
+    \item Reward-to-go unbiased estimator (drops $a_t$'s dependency on the past actions)
+    $$
+    \widetilde{\grad_{\theta} \Jcal(\theta)}  = \frac{1}{N}\sum_{n=1}^{N} \left(\sum_{t=0}^{T_{n}-1}G_t(\tau_n)\grad_{\theta}\log \pi_\theta\left(a_t | s_t\right) \right)
+    $$
+    Recall $G_t(\tau) = \sum_{t'=t}^{T-1}\gamma^{t'-t}r_t'$. If one adopts this estimator, then the algorithm is called \textbf{REINFORCE} algorithm. This method drops the need on the Value function (see details below) but suffers from the high variance in gradient estimates.
+    \item with baseline (variance reduction)
+    $$
+    \widetilde{\grad_{\theta} \Jcal(\theta)}  = \frac{1}{N}\sum_{n=1}^{N} \left(  \sum_{t=0}^{T_{n}-1} (G_t(\tau_n) - b(s_t)) \grad_{\theta} \log \pi_\theta\left(a_t | s_t\right) \right)
+    $$
+    One popular choice of the baseline function is $b(s_t):=V^{\pi}(s_t)$. When $V^{\pi}$ is unknown, we can approximate it with $V^{\pi}_{\phi}(\cdot)$, a neural network parameterized by $\phi$.
+
+    \item Advantages based estimator 
+     $$
+    \widetilde{\grad_{\theta} \Jcal(\theta)}  = \frac{1}{N}\sum_{n=1}^{N} \left(\sum_{t=0}^{T_{n}-1}A^{\pi}(s_t, a_t) \grad_{\theta} \log \pi_\theta\left(a_t | s_t\right) \right),
+    $$
+    where $A^{\pi}(s_t, a_t)=Q^{\pi}(s_t, a_t) - V^{\pi}(a_t)$.
+
+    \item TD-error based estimator 
+     $$
+    \widetilde{\grad_{\theta} \Jcal(\theta)}  = \frac{1}{N}\sum_{n=1}^{N} \left( (r_t+\gamma V^{\pi}(s_{t+1}) - V^{\pi}(s_t)) \sum_{t=0}^{T_{n}-1}\grad_{\theta} \log \pi_\theta\left(a_t | s_t\right) \right),
+    $$
+    where $r_t+\gamma V^{\pi}(s_{t+1}) - V^{\pi}(s_t)$ is a approximation of the $A^{\pi}(s_t, a_t)$.
+
+    \item GAE$(\gamma, \lambda)$ estimator
+    $$
+    \widetilde{\grad_{\theta} \Jcal(\theta)}  = \frac{1}{N}\sum_{n=1}^{N} \left( \sum_{\ell=0}^{T_n}(\gamma\lambda)^{\ell}\delta_{t+\ell} \sum_{t=0}^{T_{n}-1}\grad_{\theta} \log \pi_\theta\left(a_t | s_t\right) \right),
+    $$
+    where $\delta_t=r_t + \gamma V^{\pi}_{\phi}(s_{t+1}) -  V^{\pi}_{\phi}(s_{t})$.
+    GAE$(\gamma, 0)$ typically has low variance and GAE$(\gamma, 1)$ has high variance.
+\end{itemize}
+
+\subsection{REINFORCE algorithm}
+If one adopts the Reward-to-go unbiased estimator, we can reach to the REINFORCE algorithm. The objective function is
+$$
+     \Jcal(\theta)  = \Embb_{\tau\sim \pi_\theta}\left(\sum_{t=0}^{T-1}G_t(\tau)\log \pi_\theta\left(a_t | s_t\right) \right)
+$$
+where $G_t(\tau) = \sum_{t'=t}^{T-1}\gamma^{t'-t}r_{t'}$. 
+This method drops the need on the Value function but suffers from the high variance in gradient estimates. The algorithm is summarized in Algorithm~\ref{algo:reinforce}
+
+\begin{algorithm}[H]
+\caption{REINFORCE}
+\begin{algorithmic}[1]
+    \State Inputs: Initial Policy network parameter $\theta_0$ and stepsize $\alpha$.
+    \For{k=0,1,2....}
+        \State Collect a set of trajectories $D_k=\{\tau_n\}_{n=1}^{N}$.
+        \State Reward-to-go calculation $G_t(\tau_n) = \sum_{t'=t}^{T_n-1}\gamma^{t'-t}r_t'$ for all $n$.
+        \State Compute the gradient estimate
+         $$
+            \widetilde{\grad_{\theta} \Jcal(\theta_k)}  = \frac{1}{N}\sum_{n=1}^{N} \left(\sum_{t=0}^{T_{n}-1}G_t(\tau_n)\grad_{\theta}\log \pi_{\theta_k}\left(a_t | s_t\right) \right)
+        $$
+        \State Policy update $\theta_{k+1} \gets \theta_k + \alpha \widetilde{\grad_{\theta} \Jcal(\theta_k)}$
+    \EndFor
+\end{algorithmic}
+\label{algo:reinforce}
+\end{algorithm}
+
+
+\subsection{Actor-Critic Algorithm} 
+When one adopts the estimator for the policy gradient, usually the state value function is used. Let us approximate it with $V^{\pi}_{\phi}$ the objective function for TD-residual based gradient estimator can written as
+
+\begin{align*}
+     \max \left\{\Jcal_{\text{TD}}(\theta):= \Embb_{\tau\sim \pi_{\theta}}\left[ \sum_{t=0}^{T-1}(r_t+\gamma V^{\pi}_{\phi}(s_{t+1}) - V^{\pi}_{\phi}(s_{t}))\log\pi_{\theta}(a_t|s_t)\right]\right\}.
+\end{align*}
+
+Similarly, the $V^{\pi}_{\phi}$ can be updated by
+
+\begin{align}
+     \min \left\{\Lcal(\phi):= \Embb_{\tau\sim \pi_{\theta}}\left[ \sum_{t=0}^{T-1}[(r_t+\gamma V^{\pi}_{\phi}(s_{t+1}) - V^{\pi}_{\phi}(s_t)]^2\right]\right\}.
+     \label{eq:naive.critic.obj}
+\end{align}
+
+This is actually the actor-critic framework. When we drive $\Lcal(\phi)$ to 0, intuitively, the advantage will be close to 0, which means that for the actor, $\pi_{\theta}$ is approaching the optimal policy and the value function is also approaching the optimal.
+
+
+\yd{To add}
+
+\begin{algorithm}[H]
+\caption{Naive Actor-Critic Algorithm}
+\begin{algorithmic}[1]
+    \State Inputs: Initial Policy network parameter $\theta_0$ and stepsize $\alpha$.
+    \For{k=0,1,2....}
+        \State Collect a set of trajectories $D_k=\{\tau_n\}_{n=1}^{N}$.
+        \State Reward-to-go calculation $G_t(\tau_n) = \sum_{t'=t}^{T_n-1}\gamma^{t'-t}r_t'$ for all $n$.
+        \State Compute the gradient estimate
+         $$
+           ...
+        $$
+        \State Policy update $\theta_{k+1} \gets \theta_k + \alpha \widetilde{\grad_{\theta} \Jcal(\theta_k)}$
+    \EndFor
+\end{algorithmic}
+\label{algo:actor-critic}
+\end{algorithm}
+
+

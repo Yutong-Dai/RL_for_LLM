@@ -1,0 +1,27 @@
+\section{Group Relative Policy Optimization}
+
+GRPO is motivated by removing the requirements on estimating the value function is ued PPO Algorithm~\ref{algo:ppo}.
+
+
+For each question $q\sim P(Q)$, GRPO samples a group of outputs $\{o_1, o_2, \ldots, o_G\}$ from the old policy $\pi_{\theta_{\text{old}}}$.
+\begin{align}
+& \Jcal_{GRPO}(\theta) \nonumber =\Embb_{\left[q \sim P(Q),\left\{o_i\right\}_{i=1}^G \sim \pi_{\theta_{\text{old}}}(O | q)\right]} \nonumber\\
+& \left[\frac{1}{G} \sum_{i=1}^G \frac{1}{\left|o_i\right|} \sum_{t=1}^{\left|o_i\right|}\left\{ \min\left[\frac{\pi_\theta\left(o_{i, t} | q, o_{i,<t}\right)}{\pi_{\theta_{\text{old}}}\left(o_{i, t} | q, o_{i,<t}\right)}\hat{A}_{i, t}, \operatorname{clip}\left(\frac{\pi_\theta\left(o_{i, t} | q, o_{i,<t}\right)}{\pi_{\theta_{o l d}}\left(o_{i, t} | q, o_{i,<t}\right)}, 1-\varepsilon, 1+\varepsilon\right) \hat{A}_{i, t}\right]-\beta \mathbb{D}_{K L}\left[\pi_\theta| | \pi_{\text{ref}}\right](i,t)\right\}\right],
+\end{align}
+
+where
+\begin{itemize}
+    \item $\mathbb{D}_{KL}\left[\pi_\theta| | \pi_{\text{ref}}\right]$ is the $k_3$ estimator of the KL divergence with 
+    $$ 
+        \mathbb{D}_{K L}\left[\pi_\theta| | \pi_{\text{ref}}\right](i,t)=\frac{\pi_{\text{ref}}\left(o_{i, t} | q, o_{i,<t}\right)}{\pi_\theta\left(o_{i, t} | q, o_{i,<t}\right)}-\log \frac{\pi_{\text{ref}}\left(o_{i, t} | q, o_{i,<t}\right)}{\pi_\theta\left(o_{i, t} | q, o_{i,<t}\right)}-1
+    $$
+    \item the advantage estimate is defined as $\hat{A}_{i, t}:= \frac{r_i-\operatorname{mean}(\textbf{r})}{\operatorname{std}(\textbf{r})}$ with $\textbf{r}=\{r_1, r_2, \dots, r_G\}$.
+\end{itemize}
+
+\textbf{Remark}
+\begin{itemize}
+    \item The reverse KL divergence is used, which has the mode-seeking behavior. The usage of $k_3$ estimator is crucial for GRPO because $k_3$ guarantee to be non-negative. Otherwise, if one adopts the $k_1$ estimator, then there could be a possibility to "hack" the training process by making the $k_1$ estimator arbitrarily small (very negative), then the reward is $\Jcal_{GRPO}(\theta)$ is also maimized. However, this means that $\pi_\theta$ is very different from  $\pi_{\text{ref}}$.  At the same time, numerical instability is observed during the training dynamics. Because the computation of $\exp \left(\frac{\pi_{\text{ref}}\left(o_{i, t} | q, o_{i,<t}\right)}{\pi_\theta\left(o_{i, t} | q, o_{i,<t}\right)}\right)$ can be unstable.
+    \item In the computation of the KL term, note that $o_i\sim \pi_{\theta_{\text{old}}}$. But the link suggests that $o_i$ should be sampled from $\pi_\theta$ to make $\mathbb{D}_{K L}\left[\pi_\theta| | \pi_{\text{ref}}\right]$ an unbiased estimator. In practice, to make these make sense, one has to initialize $\pi_\theta :=\pi_{\theta_{\text{old}}}$ and take only one step update.
+    \item When optimize the objective function, one of tries to $\min_{\theta} -\Jcal_{GRPO}(\theta)$. One should notice that $-\Jcal_{GRPO}$ can be smaller than $0$, meaning the loss can be negative. This could happen when "min" term is larger that the KL term, i.e., when either the two distributions are quite different or the advantage is large.
+    % \item The definition of the (normalized) advantage estimation is different from that used in PPO, which drops the $\operatorname{KL}$ penalty. 
+\end{itemize}

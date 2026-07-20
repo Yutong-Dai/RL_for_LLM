@@ -1,0 +1,100 @@
+\section{Group Sequence Policy Optimization}
+
+In GRPO, the token-level importance sampling weight $\frac{\pi_\theta\left(o_{i, t} | q, o_{i,<t}\right)}{\pi_{\theta_{\text{old}}}\left(o_{i, t} | q, o_{i,<t}\right)}$ is applied. 
+
+GSPO argues that this is problematic since this weight  is based on a single sample $o_{i,t}$ from each next-token distribution $\pi_{\theta_{\text{old}}}\left(o_{i, t} | q, o_{i,<t}\right)$, it fails to perform  the intended distribution-correction role\footnote{Recall that Importance sampling needs multiple samples from the same distribution to reduce variance.}. Instead, it introduces high-variance noise into the training gradients, which accumulates over long sequences and is exacerbated by the clipping mechanism.
+
+Therefore, GSPO proposes to use the sequence-level importance weight $\frac{\pi_\theta\left(o_{i} | q\right)}{\pi_{\theta_{\text{old}}}\left(o_{i} | q\right)}$. Therefore, the loss function becomes (ignoring the KL regularization term)
+
+\begin{align}
+& \Jcal_{GSPO}(\theta) \nonumber =\Embb_{\left[q \sim P(Q),\left\{o_i\right\}_{i=1}^G \sim \pi_{\theta_{\text{old}}}(O | q)\right]} \left[\frac{1}{G} \sum_{i=1}^G \min\left[s_i(\theta)\hat A_i, \operatorname{clip}\left(s_i(\theta), 1-\varepsilon, 1+\varepsilon\right) \hat{A}_{i}\right]\right],
+\end{align}
+where
+$s_i(\theta)=(\frac{\pi_\theta\left(o_{i} | q\right)}{\pi_{\theta_{\text{old}}}\left(o_{i} | q\right)})^{1/|o_i|} = \exp\left(\frac{1}{\left|o_i\right|} \sum_{t=1}^{\left|o_i\right|}\log\left\{\frac{\pi_\theta\left(o_{i, t} | q, o_{i,<t}\right)}{\pi_{\theta_{\text{old}}}\left(o_{i, t} | q, o_{i,<t}\right)}\right\}\right)$, and $\hat A_i = \frac{r(x, o_i) - \text{mean}\left(\{r(x,o_j)\}_{j=1}^G\right)}{\text{std}\left(\{r(x,o_j)\}_{j=1}^G\right)}$.
+
+Therefore, GSPO applies clipping to entire responses instead of individual tokens to exclude the overly "off-policy" samples from gradient estimation, which matches both the sequence-level rewarding and optimization.Also, note that the clipping ranges in GSPO and in previous algorithms (e.g., GRPO) typically differ in order of magnitude due to the distinct definitions of importance ratios.
+
+
+In scenarios like multi-turn RL, we may desire a finer-grained advantage adjustment than the sequence level.
+\begin{align}
+& \Jcal_{GSPO-token}(\theta) \nonumber =\Embb_{\left[q \sim P(Q),\left\{o_i\right\}_{i=1}^G \sim \pi_{\theta_{\text{old}}}(O | q)\right]} \left[\frac{1}{G} \sum_{i=1}^G \frac{1}{\left|o_i\right|} \sum_{t=1}^{\left|o_i\right|}\left\{ \min\left[s_{i,t}(\theta)\hat{A}_{i, t}, \operatorname{clip}\left(s_{i,t}(\theta), 1-\varepsilon, 1+\varepsilon\right) \hat{A}_{i, t}\right]\right\}\right],
+\end{align}
+where $s_{i,t}(\theta) = \text{sg}[s_i(\theta)] \frac{\pi_\theta\left(o_{i, t} | q, o_{i,<t}\right)}{\text{sg}\left[\pi_{\theta}\left(o_{i, t} | q, o_{i,<t}\right)\right]}$ and $\text{sg}$ is the stop gradient operator, so numerically, $s_{i,t}(\theta) = s_i(\theta)$. 
+
+
+To see more clearly about the gradient of the GSPO, GSPO-token, and GRPO, we can compute (clipping is omitted for brevity
+
+\begin{align*}
+\nabla_\theta \mathcal{J}_{\mathrm{GSPO}}(\theta)
+&= \nabla_\theta \mathbb{E}_{x \sim \mathcal{D}, \{o_i\}_{i=1}^G \sim \pi_{\theta_{\text{old}}}(\cdot \mid x)}
+\left[
+\frac{1}{G} \sum_{i=1}^G s_i(\theta)\, \hat{A}_i
+\right]  \\
+&= \mathbb{E}_{x \sim \mathcal{D}, \{o_i\}_{i=1}^G \sim \pi_{\theta_{\text{old}}}(\cdot \mid x)}
+\left[
+\frac{1}{G} \sum_{i=1}^G s_i(\theta)\, \hat{A}_i \cdot \nabla_\theta \log s_i(\theta)
+\right]  \\
+&= \mathbb{E}_{x \sim \mathcal{D}, \{o_i\}_{i=1}^G \sim \pi_{\theta_{\text{old}}}(\cdot \mid x)}
+\left[
+\frac{1}{G} \sum_{i=1}^G 
+\left(
+\frac{\pi_\theta(o_i \mid x)}{\pi_{\theta_{\text{old}}}(o_i \mid x)}
+\right)^{\frac{1}{|o_i|}}
+\hat{A}_i \cdot \frac{1}{|o_i|} \sum_{t=1}^{|o_i|}
+\nabla_\theta \log \pi_\theta(o_{i,t} \mid x, o_{i,<t})
+\right] 
+\end{align*}
+
+\begin{align*}
+\nabla_\theta \mathcal{J}_{\mathrm{GSPO\text{-}token}}(\theta)
+&= \nabla_\theta \mathbb{E}_{x \sim \mathcal{D}, \{o_i\}_{i=1}^G \sim \pi_{\theta_{\text{old}}}(\cdot \mid x)}
+\left[
+\frac{1}{G} \sum_{i=1}^G \frac{1}{|o_i|} \sum_{t=1}^{|o_i|} s_{i,t}(\theta)\, \hat{A}_{i,t}
+\right] \\
+&= \mathbb{E}_{x \sim \mathcal{D}, \{o_i\}_{i=1}^G \sim \pi_{\theta_{\text{old}}}(\cdot \mid x)}
+\left[
+\frac{1}{G} \sum_{i=1}^G s_i(\theta) \cdot \frac{1}{|o_i|}
+\sum_{t=1}^{|o_i|}
+\hat{A}_{i,t} \frac{\nabla_\theta \pi_\theta(o_{i,t} \mid x, o_{i,<t})}
+{\pi_\theta(o_{i,t} \mid x, o_{i,<t})}
+\right] \\
+&= \mathbb{E}_{x \sim \mathcal{D}, \{o_i\}_{i=1}^G \sim \pi_{\theta_{\text{old}}}(\cdot \mid x)}
+\left[
+\frac{1}{G} \sum_{i=1}^G 
+\left(
+\frac{\pi_\theta(o_i \mid x)}{\pi_{\theta_{\text{old}}}(o_i \mid x)}
+\right)^{\frac{1}{|o_i|}}
+\cdot \frac{1}{|o_i|}
+\sum_{t=1}^{|o_i|}
+\hat{A}_{i,t}\, \nabla_\theta \log \pi_\theta(o_{i,t} \mid x, o_{i,<t})
+\right]
+\end{align*}
+
+\begin{align*}
+\nabla_\theta \mathcal{J}_{\mathrm{GRPO}}(\theta)
+&= \nabla_\theta \mathbb{E}_{x \sim \mathcal{D}, \{o_i\}_{i=1}^G \sim \pi_{\theta_{\text{old}}}(\cdot \mid x)}
+\left[
+\frac{1}{G} \sum_{i=1}^G \frac{1}{|o_i|} \sum_{t=1}^{|o_i|} w_{i,t}(\theta)\, \hat{A}_{i,t}
+\right] \\
+&= \mathbb{E}_{x \sim \mathcal{D}, \{o_i\}_{i=1}^G \sim \pi_{\theta_{\text{old}}}(\cdot \mid x)}
+\left[
+\frac{1}{G} \sum_{i=1}^G \hat{A}_i \cdot \frac{1}{|o_i|}
+\sum_{t=1}^{|o_i|}
+\frac{\pi_\theta(o_{i,t} \mid x, o_{i,<t})}
+{\pi_{\theta_{\text{old}}}(o_{i,t} \mid x, o_{i,<t})}
+\, \nabla_\theta \log \pi_\theta(o_{i,t} \mid x, o_{i,<t})
+\right]
+\end{align*}
+
+Therefore, the fundamental distinction between GSPO and GRPO lies in how they weight the gradients of the log likelihoods of tokens. In GRPO, the tokens are weighted according to their respective "importance  weight". In contrast, GSPO weights all the tokens in a response equally, eliminating this instability factor of GRPO.
+
+GSPO-token and GSPO are numerically identical in the optimization objective, clipping condition, and theoretical gradient when we set the  advantages of all the tokens in the response $o_i$ to the same value (i.e., $\hat A_{i,t} = \hat A_i$), while GSPO-token enjoys the higher flexibility of adjusting the advantages per token.
+
+
+\begin{equation}
+  r_{i,t} =
+  \begin{cases}
+    r^{\mathrm{re}}_{i,t} + \gamma^{T_i-t}R_{\text{out},i}, & R_{\mathrm{out},i}=+1,\\[4pt]
+    \texttt{sim}_{i^*,t}\cdot r^{\mathrm{re}}_{i^*,t} + \gamma^{T_i-t}R_{\text{out},i}, & R_{\mathrm{out},i}=-1.
+  \end{cases}
+\end{equation}

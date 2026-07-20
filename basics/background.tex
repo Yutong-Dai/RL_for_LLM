@@ -1,0 +1,100 @@
+\section{Background Knowledge}
+
+\subsection{Markov Decision Process}
+\begin{definition}[State, Action, Trajectory]
+A sequence of actions and states with $T$ interactions with environment is defined as a trajectory $\tau = (s_0, a_0, s_1,a_1,s_2,a_2,\ldots, a_{T-1}, s_{T-1})$ 
+\end{definition}
+
+\begin{definition}[Reward and Return] 
+% A single step reward $r_t$ is determined by the current state $s_t$ the action taken $a_t$ and the state $s_{t+1}$ after the action $a_{t}$ is taken. It is defined as $r_t := R(s_t,a_t,s_{t+1})$. 
+At time step $t$, the agent observes state $s_t$, takes action $a_t$, and transitions to the next state $s_{t+1}$. The single-step reward is determined by the transition and is defined as
+$$
+r_t = R(s_t,a_t,s_{t+1}).
+$$ 
+The (discounted) \textbf{reward} on the trajectory $\tau$ is defined as 
+$$
+    R(\tau) = \sum_{t=0}^{t-1}\gamma^{t}r_t,
+$$
+where $\gamma\in(0,1]$ is the discount factor. The discounted \textbf{return} starting from time step $t$ is defined as
+$$
+    G_t(\tau) = \sum_{t'=t}^{T-1}\gamma^{t'-t}r_{t'}. 
+$$
+Equivalently, $G_t$ satisfies the recursive relation
+$$
+G_t = r_t + \gamma G_{t+1}.
+$$
+\end{definition}
+
+
+\begin{definition}[State-Value Function and Value Function]
+The value function for the policy $\pi$ is defined as
+$$
+% V^{\pi}(s_t) = \Embb_{\pi} [G_t | s_t] = \Embb_{a_t\sim \pi(.|s_t)}\Embb_{s_{t+1}\sim P(.|s_t, a_t)}\left[r_t + \gamma V^{\pi}(s_{t+1})\right].
+\begin{aligned}
+V^\pi(s_t)
+&= \Embb_{\pi} [G_t \mid s_t]  = \Embb_{\pi} [r_t + \gamma G_{t+1} \mid s_t] = \mathbb{E}_{a_t\sim \pi(\cdot\mid s_t)}
+\mathbb{E}_{s_{t+1}\sim P(\cdot\mid s_t,a_t)}
+\left[
+r_t + \gamma \Embb_{\pi}[G_{t+1}\mid s_{t+1}]
+\right] \\
+&= \mathbb{E}_{a_t\sim \pi(\cdot\mid s_t)}
+\mathbb{E}_{s_{t+1}\sim P(\cdot\mid s_t,a_t)}
+\left[
+r_t + \gamma V^\pi(s_{t+1})
+\right].
+\end{aligned}
+$$
+
+The state-value function for the policy $\pi$ is defined as
+$$
+Q^{\pi}(s_t, a_t) = \Embb_{\pi} [G_t | s_t, a_t] = \Embb_{s_{t+1}\sim P(.|s_t, a_t)}\left[r_t + \gamma V^{\pi}(s_{t+1})\right].
+$$
+Therefore,
+$$
+V^{\pi}(s_t) = \Embb_{a_t\sim \pi(.|s_t)} [Q^{\pi}(s_t, a_t)]
+$$
+\end{definition}
+
+
+
+\begin{definition}[Advantage]
+The advantage function, by it’s definition, measures whether or not the action is better or worse than the policy’s default behavior.
+    \begin{align}
+        A^{\pi}(s_t, a_t) 
+        & =  Q^{\pi}(s_t, a_t) - V^{\pi}(s_t)  = \Embb_{s_{t+1}\sim P(.|s_t, a_t)} \left[\underbrace{r_t + \gamma V^{\pi}(s_{t+1}) -  V^{\pi}(s_t)}_{\text{temporal difference}}\right]
+    \end{align}
+    
+\end{definition}
+
+\subsection{Useful Facts}
+
+\begin{enumerate}
+    \item  Probability of a trajectory 
+        \begin{align}
+        P(\tau | \theta)=\rho_0\left(s_0\right) \prod_{t=0}^{T-1} P\left(s_{t+1} | s_t, a_t\right) \pi_\theta\left(a_t | s_t\right) \label{eq:prob.of.a.trajectory}
+        \end{align}
+     \item  log derivative trick
+         \begin{align}
+        \grad_{\theta} P(\tau | \theta)=  P(\tau | \theta) \grad_\theta \log P(\tau | \theta)\label{eq:log.derivative.trick}
+        \end{align}
+    \item expected Grad-Log-Prob Lemma
+        \begin{align}\label{eq:grad.log.prob}
+            \Embb_{x\sim p(\cdot;\theta)} [\grad_{\theta} \log p(x;\theta)] = 0
+        \end{align}
+
+    
+\end{enumerate}
+
+
+\subsection{Glossaries}
+\begin{definition}[Estimation of the $\operatorname{KL}$ divergence]\label{def:kl-est}
+    There are different estimators of the KL divergence, which can be found \href{http://joschu.net/blog/kl-approx.html}{here}. Recall that $\operatorname{KL}(q||p)=E_{x\sim q}\left[\log \frac{q(x)}{p(x)}\right]$,
+    
+    \begin{itemize}
+        \item $k_1$ estimator: $\frac{1}{n}\sum_{i=1}^{n} \log \frac{q(x_i)}{p(x_i)}$. Unbiased, high variance. Can be negative.
+        \item $k_2$ estimator:  $\frac{1}{n}\sum_{i=1}^{n} \frac{1}{2}\left(\log \frac{p(x_i)}{q(x_i)}\right)^2$. biased, low variance. Always positive.
+        \item  $k_3$ estimator: $\frac{p(x)}{q(x)} - 1 - \log \frac{p(x)}{q(x)}$. Always positive. Better than $k_2$? (non-negativity: $\log a \leq a - 1$ for all $a>0$).
+    \end{itemize}
+\end{definition}
+
+\yd{To add: comparison with three estimators}

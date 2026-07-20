@@ -1,0 +1,177 @@
+\section{Clipped Importance Sampling Policy Optimization}
+
+Clipped Importance Sampling Policy Optimization (CISPO~\citep{minimax2025minimaxm1scalingtesttimecompute}) propsed in MiniMax-M1 optimizes a policy-gradient objective using a clipped importance sampling ratio as a stop-gradient weight.
+
+The CISPO objective is defined as
+\[
+\mathcal{J}_{\mathrm{CISPO}}(\theta)
+=
+\mathbb{E}_{(q,a)\sim \mathcal{D},\ \{o_i\}_{i=1}^{G}\sim \pi_{\theta_{\mathrm{old}}}(\cdot\mid q)}
+\left[
+    \frac{1}{\sum_{i=1}^{G}|o_i|}
+    \sum_{i=1}^{G}
+    \sum_{t=1}^{|o_i|}
+    \operatorname{sg}\!\left(\hat r_{i,t}(\theta)\right)
+    \hat A_{i,t}
+    \log \pi_\theta(o_{i,t}\mid q,o_{i,<t})
+\right].
+\]
+
+Here, $\hat A_{i,t}$ is the estimated advantage for token $o_{i,t}$, and $\operatorname{sg}(\cdot)$ denotes the stop-gradient operation. Therefore, $\operatorname{sg}\!\left(\hat r_{i,t}(\theta)\right)$ is treated as a constant when taking gradients with respect to $\theta$. The clipped importance sampling ratio is
+\[
+    \hat r_{i,t}(\theta)
+    =
+    \operatorname{clip}
+    \left(
+        r_{i,t}(\theta),
+        1-\epsilon_{\mathrm{low}},
+        1+\epsilon_{\mathrm{high}}
+    \right),
+\]
+where the token-level importance sampling ratio is
+\[
+    r_{i,t}(\theta)
+    =
+    \frac{
+        \pi_\theta(o_{i,t}\mid q,o_{i,<t})
+    }{
+        \pi_{\theta_{\mathrm{old}}}(o_{i,t}\mid q,o_{i,<t})
+    }.
+\]
+
+Equivalently,
+\[
+    \hat r_{i,t}(\theta)
+    =
+    \begin{cases}
+    1-\epsilon_{\mathrm{low}},
+    &
+    r_{i,t}(\theta) < 1-\epsilon_{\mathrm{low}},
+    \\[4pt]
+    r_{i,t}(\theta),
+    &
+    1-\epsilon_{\mathrm{low}}
+    \leq r_{i,t}(\theta)
+    \leq 1+\epsilon_{\mathrm{high}},
+    \\[4pt]
+    1+\epsilon_{\mathrm{high}},
+    &
+    r_{i,t}(\theta) > 1+\epsilon_{\mathrm{high}}.
+    \end{cases}
+\]
+
+Thus, CISPO does not clip the surrogate objective itself. Instead, it clips the token-level importance sampling ratio and uses the clipped ratio as a stop-gradient coefficient in front of the log-probability term.
+
+\subsection{Gradient Difference between PPO and CISPO}
+
+The main difference between PPO and CISPO is how clipping affects the policy gradient.
+
+For PPO, the clipped surrogate objective at token $(i,t)$ can be written as
+\[
+    L^{\mathrm{PPO}}_{i,t}(\theta)
+    =
+    \min
+    \left(
+        r_{i,t}(\theta)\hat A_{i,t},
+        \operatorname{clip}
+        \left(
+            r_{i,t}(\theta),
+            1-\epsilon,
+            1+\epsilon
+        \right)
+        \hat A_{i,t}
+    \right),
+\]
+where
+\[
+    r_{i,t}(\theta)
+    =
+    \frac{
+        \pi_\theta(o_{i,t}\mid q,o_{i,<t})
+    }{
+        \pi_{\theta_{\mathrm{old}}}(o_{i,t}\mid q,o_{i,<t})
+    }.
+\]
+
+Consider the case
+\[
+    \hat A_{i,t} > 0
+    \quad \text{and} \quad
+    r_{i,t}(\theta) > 1+\epsilon.
+\]
+Then the clipped PPO objective becomes
+\[
+    L^{\mathrm{PPO}}_{i,t}(\theta)
+    =
+    (1+\epsilon)\hat A_{i,t}.
+\]
+This term is constant with respect to $\theta$, and therefore
+\[
+    \nabla_\theta L^{\mathrm{PPO}}_{i,t}(\theta)
+    =
+    0.
+\]
+Thus, when the probability of a positive-advantage token has already increased beyond the clipping range, PPO removes the gradient contribution from this token.
+
+Similarly, if
+\[
+    \hat A_{i,t} < 0
+    \quad \text{and} \quad
+    r_{i,t}(\theta) < 1-\epsilon,
+\]
+then the clipped PPO objective becomes
+\[
+    L^{\mathrm{PPO}}_{i,t}(\theta)
+    =
+    (1-\epsilon)\hat A_{i,t},
+\]
+which is also constant with respect to $\theta$. Hence,
+\[
+    \nabla_\theta L^{\mathrm{PPO}}_{i,t}(\theta)
+    =
+    0.
+\]
+In this case, PPO removes the gradient contribution when the probability of a negative-advantage token has already decreased beyond the clipping range.
+
+By contrast, CISPO uses the clipped importance sampling ratio as a stop-gradient coefficient:
+\[
+    \mathcal{J}_{\mathrm{CISPO}}(\theta)
+    =
+    \mathbb{E}
+    \left[
+        \frac{1}{\sum_{i=1}^{G}|o_i|}
+        \sum_{i=1}^{G}
+        \sum_{t=1}^{|o_i|}
+        \operatorname{sg}\!\left(\hat r_{i,t}(\theta)\right)
+        \hat A_{i,t}
+        \log \pi_\theta(o_{i,t}\mid q,o_{i,<t})
+    \right].
+\]
+
+Since
+\[
+    \operatorname{sg}\!\left(\hat r_{i,t}(\theta)\right)
+\]
+is treated as a constant during backpropagation, the gradient of the CISPO objective is
+\[
+    \nabla_\theta \mathcal{J}_{\mathrm{CISPO}}(\theta)
+    =
+    \mathbb{E}
+    \left[
+        \frac{1}{\sum_{i=1}^{G}|o_i|}
+        \sum_{i=1}^{G}
+        \sum_{t=1}^{|o_i|}
+        \operatorname{sg}\!\left(\hat r_{i,t}(\theta)\right)
+        \hat A_{i,t}
+        \nabla_\theta
+        \log \pi_\theta(o_{i,t}\mid q,o_{i,<t})
+    \right].
+\]
+
+Therefore, even when the ratio $r_{i,t}(\theta)$ falls outside the clipping interval, CISPO does not make the gradient of that token vanish. Instead, the clipped ratio $\hat r_{i,t}(\theta)$
+controls the magnitude of the gradient, while the token still contributes a policy-gradient signal through
+\[
+    \nabla_\theta \log \pi_\theta(o_{i,t}\mid q,o_{i,<t}).
+\]
+
+In short, PPO clips the surrogate objective, which can cause clipped tokens to have zero gradient. CISPO clips the importance sampling ratio and uses it as a stop-gradient weight, so clipped tokens can still contribute to the policy gradient.

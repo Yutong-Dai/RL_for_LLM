@@ -1,0 +1,75 @@
+\section{REINFORCE++}
+
+
+
+REINFORCE++ modifies PPO in the LLM text by introducing
+\begin{itemize}
+    % \item using outcome reward model $r(x,y)$, where $x$ and $y$ are input prompt and response, respectively;
+    \item token-level KL penalty  $\operatorname{KL}(t;\theta)=\log\frac{\pi_{\theta}(a_t|s_t)}{\pi_{\theta_{\text{ref}}}(a_t|s_t)}$, where $\pi_{\theta_{\text{ref}}}$ can be the SFT model;
+    \item token-level reward function $r_t=\Imbb(s_t=[\text{EOS}])r(x,y)-\beta\operatorname{KL}(t)$, where $x$ and $y$ are input prompt and response, respectively and $r(x,y)$ is the outcome reward.
+\end{itemize}
+
+Recall the advantage used in PPO is $A^{\operatorname{GAE}(\gamma, \lambda)}_{\phi} = \sum_{\ell=0}^{T-1-t}(\gamma\lambda)^{\ell}\left(r_{t+\ell} + \gamma V^{\pi}_{\phi}(s_{t+1+\ell}) - V^{\pi}_{\phi}(s_{t+\ell}) \right)$. If we drop the value network and plug in the new definition of $r_t$, we get 
+
+\begin{align*}
+    A^{\operatorname{GAE}(\gamma, \lambda)}_{t} 
+    & = \sum_{\ell=0}^{T-1-t}(\gamma\lambda)^{\ell}\left[\Imbb(s_{t+\ell}=[\text{EOS}])r(x,y)-\beta\operatorname{KL}(t+\ell;\theta) \right] \\
+    & = \sum_{i=t}^{T-1}(\gamma\lambda)^{\ell}\left[\Imbb(s_{i}=[\text{EOS}])r(x,y)-\beta\operatorname{KL}(i) \right]  = (\gamma\lambda)^{T-1}r(x,y)-\sum_{i=t}^{T-1}(\gamma\lambda)^{i}\left[\beta\operatorname{KL}(i;\theta) \right].
+\end{align*}
+Specifically, letting $\gamma=\lambda=1$, we get the advantage estimation used in REINFORCE++ as
+\begin{equation}
+A^{\operatorname{RF++}}_{t}=r(x,y) - \sum_{i=t}^{T-1}\beta\operatorname{KL}(i;\theta). 
+\end{equation}
+
+
+Consequently, for the $k$th episode, REINFORCE++ solves the following problem
+
+\begin{align*}
+     \theta_{k+1}=\arg\max_{\theta} \frac{1}{N}\sum_{n=1}^{N}\frac{1}{T_n}
+      \sum_{t=0}^{T_n-1}  
+     \min\left\{\frac{\pi_{\theta}(a_t^{(n)}|s_t^{(n)})}{\pi_{\theta_{k}}(a_t^{(n)}|s_t^{(n)})}\bar A_{n,t}, \operatorname{clip}\left(\frac{\pi_{\theta}(a_t|s_t)}{\pi_{\theta_{k}}(a_t|s_t)}, 1-\epsilon, 1+\epsilon\right)
+     \bar A_{n,t}\right\},
+\end{align*}
+where $\bar A_{n,t} = \frac{A^{\operatorname{RF++}}_{n,t}-\mu_k}{\sigma_k}$, $\mu_k=\operatorname{mean}\{A^{\operatorname{RF++}}_{n,t}\}_{n\in[1,N], t\in[0,T_n-1]}$, $\sigma_k=\operatorname{std}\{A^{\operatorname{RF++}}_{n,t}\}_{n\in[1,N], t\in[0,T_n-1]}$, $A^{\operatorname{RF++}}_{n,t}=r(x^{(n)},y^{(n)}) - \sum_{i=t}^{T_n-1}\beta\operatorname{KL}(i;\theta_k)$, and $(x^{(n)},y^{(n)})$ is the $n$th sample.
+
+To conclude, we summarize REINFORCE++ in Algorithm~\ref{algo:RF++}.
+\begin{algorithm}[H]
+\caption{REINFORCE++}
+\begin{algorithmic}[1]
+    \State Inputs: Initial Policy network parameter $\theta_0$.
+    \For{k=0,1,2....}
+        \State Collect a set of trajectories $D_k=\{\tau_n\}_{n=1}^{N}$.
+        \State $\{A_{n,t}^{\text{RF++}}\}_{n\in[1,N], t\in[0,T_n-1]}$ calculation, batch mean $\mu_k$ and variance $\sigma_k$  calculation.
+        \State Compute normalized advantage estimation $\{\bar A_{n,t} = \frac{A^{\operatorname{RF++}}_{n,t}-\mu_k}{\sigma_k}\}_{n\in[1,N], t\in[0,T_n-1]}$.
+        \State Approximately solve 
+            \begin{align*}
+                 \theta_{k+1}=\arg\max_{\theta} \frac{1}{N}\sum_{n=1}^{N}\frac{1}{T_n}
+                  \sum_{t=0}^{T_n-1}  
+                 \min\left\{\frac{\pi_{\theta}(a_t^{(n)}|s_t^{(n)})}{\pi_{\theta_{k}}(a_t^{(n)}|s_t^{(n)})}\bar A_{n,t}, \operatorname{clip}\left(\frac{\pi_{\theta}(a_t|s_t)}{\pi_{\theta_{k}}(a_t|s_t)}, 1-\epsilon, 1+\epsilon\right)
+                 \bar A_{n,t}\right\},                 
+            \end{align*}
+    \EndFor
+\end{algorithmic}
+\label{algo:RF++}
+\end{algorithm}
+
+
+\textbf{Remark}
+\begin{itemize}
+    \item Compared to GRPO, the normalization happens on the "batch" level; while GRPO applies the normalization within the "group" level.
+    \item The KL penalty applied in the loss function is different. For GRPO, the KL penalty is taken out of the definition of the advantage estimation and uses the $k_3$ estimator (recall the definition in Definition\ref{def:kl-est}), which is 
+    $\beta\mathbb{D}_{K L}\left[\pi_\theta| | \pi_{\text{ref}}\right](i,t)$
+   . In REINFORCE++, the $\operatorname{KL}$ penalty is factorized in the definition of the advantage estimation and uses the $k_1$ estimator, which is  $\beta\sum_{i=t}^{T-1}\operatorname{KL}(i;\theta)$. Notice that in the $t$th action, the penalty is the accumulation of all $\operatorname{KL}$ penalties starting from the time step $t$ to the end.
+\end{itemize}
+
+Motivated by the discussion above, \citet{xie2025logic} modifies the loss function by combining the GRPO and REINFROCE++ as below.
+
+ \begin{align*}
+     \theta_{k+1}=\arg\max_{\theta} \frac{1}{N}\sum_{n=1}^{N}\frac{1}{T_n}
+      \sum_{t=0}^{T_n-1}  
+     \min\left\{\frac{\pi_{\theta}(a_t^{(n)}|s_t^{(n)})}{\pi_{\theta_{k}}(a_t^{(n)}|s_t^{(n)})}\bar A_{n,t}, \operatorname{clip}\left(\frac{\pi_{\theta}(a_t|s_t)}{\pi_{\theta_{k}}(a_t|s_t)}, 1-\epsilon, 1+\epsilon\right)
+     \bar A_{n,t} -\beta \mathbb{D}_{K L}\left[\pi_\theta| | \pi_{\text{ref}}\right](i,t)\right\},                 
+\end{align*}
+where $\bar A_{n,t} = \frac{A^{\operatorname{Logic}}_{n,t}-\mu_k}{\sigma_k}$, $\mu_k=\operatorname{mean}\{A^{\operatorname{Logic}}_{n,t}\}_{n\in[1,N], t\in[0,T_n-1]}$, $\sigma_k=\operatorname{std}\{A^{\operatorname{Logic}}_{n,t}\}_{n\in[1,N], t\in[0,T_n-1]}$, $A^{\operatorname{Logic}}_{n,t}=r(x^{(n)},y^{(n)})$. Basically, it moves $\operatorname{KL}$ penalty out of the definition of the advantage estimators and use $k_3$ $\operatorname{KL}$  estimation.
+
+
