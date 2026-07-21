@@ -32,6 +32,13 @@ $$
 \end{cases}
 $$
 
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.7\linewidth]{figures/ppo_clip_region.pdf}
+    \caption{PPO-Clip trust region in the $(A,r)$ plane, where $r=\pi_\theta(a|s)/\pi_{\theta_{\text{old}}}(a|s)$. The red region is the clipped region, and the green region is the unclipped region (after the clip and min operation).}
+    \label{fig:ppo.clip.region}
+\end{figure}
+
 \textbf{Remark}
 \begin{itemize}
     \item The popular choice of $\hat A_\phi(s_t,a_t)$ is $A^{\operatorname{GAE}(\gamma, \lambda)}_{\phi} = \sum_{\ell=0}^{T-1-t}(\gamma\lambda)^{\ell}\left(r_{t+\ell} + \gamma V^{\pi}_{\phi}(s_{t+1+\ell}) - V^{\pi}_{\phi}(s_{t+\ell}) \right)$.
