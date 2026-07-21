@@ -195,14 +195,14 @@ For the first token after observation $o_{i+1}$,
 \]
 Because $s_{i+1,0}=x_{<p_{i+1,0}}$ contains $o_{i+1}$, the critic prediction $v_{i+1,0}$ is conditioned on the complete next observation.
 
-\paragraph{Value output mask.}
-Suppose \texttt{action\_mask[$p$]} is $1$ exactly when $x_p$ is a model-generated action token. The value output at physical position $t$ is used when the next token $x_{t+1}$ is an action token:
-\[
-    \texttt{value\_loss\_mask[$t$]}
-    =
-    \texttt{action\_mask[$t+1$]}.
-\]
-This detail matters. One should not simply discard every critic output located at an observation-token position. The output at the final observation or assistant-prefix position may be exactly the value needed for the next action's first token. The rule is: keep critic outputs representing states before generated action tokens, and ignore critic outputs representing states before non-generated tokens.
+% \paragraph{Value output mask.}
+% Suppose \texttt{action\_mask[$p$]} is $1$ exactly when $x_p$ is a model-generated action token. The value output at physical position $t$ is used when the next token $x_{t+1}$ is an action token:
+% \[
+%     \texttt{value\_loss\_mask[$t$]}
+%     =
+%     \texttt{action\_mask[$t+1$]}.
+% \]
+% This detail matters. One should not simply discard every critic output located at an observation-token position. The output at the final observation or assistant-prefix position may be exactly the value needed for the next action's first token. The rule is: keep critic outputs representing states before generated action tokens, and ignore critic outputs representing states before non-generated tokens.
 
 \paragraph{Reward alignment.}
 Let $r_{i,j}$ be the reward assigned to the transition caused by choosing token $a_{i,j}$. Inside an action span, the usual assignment is
@@ -251,33 +251,96 @@ For the final token of a nonterminal action span, the next decision is $a_{i+1,0
 %     -
 %     V_\phi(c_i\Vert a_{i,<n_i-1}).
 % \]
-This is the well-defined version of the paper's expression connecting the last token of one action to the first token of the next action. The observation tokens are included in the next state, but no separate GAE steps are inserted for each observation token.
+This is the well-defined version of the \citet{hou2026single} (4) and (5). The observation tokens are included in the next state, but no separate GAE steps are inserted for each observation token.
 
-\textit{Final token of a terminal episode}. Suppose action span $M-1$ terminates the episode. There is no next policy-decision state, so set $v_{\mathrm{terminal}}=0$ and $A_{\mathrm{terminal}}=0$. Then
+\begin{itemize}
+
+    \item \underline{Final token of a terminal episode}. Suppose action span $M-1$ terminates the episode. There is no next policy-decision state, so set $v_{\mathrm{terminal}}=0$ and $A_{\mathrm{terminal}}=0$. Then
+        \[
+            \delta_{M-1,n_{M-1}-1}:=R_{M-1}-v_{M-1,n_{M-1}-1},
+        \]
+        and
+        \[
+            A^{(\lambda)}_{M-1,n_{M-1}-1}:=\delta_{M-1,n_{M-1}-1}.
+        \]
+        This is the initialization point for the backward recursion in a completed episode.
+
+    \item \underline{Truncated but nonterminal trajectory}. A time limit, maximum-token limit, or context limit is not necessarily a true terminal state. Let $s_{\mathrm{boot}}$ be the valid policy-decision state from which the rollout would have continued, and define
+        \[
+            v_{\mathrm{boot}}:=V_\phi(s_{\mathrm{boot}}).
+        \]
+        For the last sampled action token,
+        \[
+            \delta_{\mathrm{last}}
+            :=
+            r_{\mathrm{last}}+\gamma v_{\mathrm{boot}}-v_{\mathrm{last}}.
+        \]
+        Since no later TD residuals were sampled, initialize the GAE carry as $A_{\mathrm{next}}:=0$, giving
+        \[
+            A_{\mathrm{last}}:=\delta_{\mathrm{last}}.
+        \]
+        The bootstrap value represents the unobserved future return. Setting $v_{\mathrm{boot}}:=0$ for an ordinary truncation would incorrectly treat the truncation as failure or termination.
+
+\end{itemize}
+
+\paragraph{Actor advantage and critic target.}
+SAO uses separate trace-decay choices for the actor and critic. Let
 \[
-    \delta_{M-1,n_{M-1}-1}:=R_{M-1}-v_{M-1,n_{M-1}-1},
+    \lambda_{\mathrm{policy}} := 1-\alpha l^{-1},
+    \qquad
+    \lambda_{\mathrm{critic}} := 1,
+\]
+where $l$ is the rollout length used by the estimator. Using the same TD residuals, compute two backward recursions:
+\[
+    A^\pi_{i,j}
+    :=
+    \delta_{i,j}
+    +
+    \gamma\lambda_{\mathrm{policy}}
+    A^\pi_{\operatorname{next}(i,j)},
 \]
 and
 \[
-    A^{(\lambda)}_{M-1,n_{M-1}-1}:=\delta_{M-1,n_{M-1}-1}.
-\]
-This is the initialization point for the backward recursion in a completed episode.
-
-\textit{Truncated but nonterminal trajectory}. A time limit, maximum-token limit, or context limit is not necessarily a true terminal state. Let $s_{\mathrm{boot}}$ be the valid policy-decision state from which the rollout would have continued, and define
-\[
-    v_{\mathrm{boot}}:=V_\phi(s_{\mathrm{boot}}).
-\]
-For the last sampled action token,
-\[
-    \delta_{\mathrm{last}}
+    A^V_{i,j}
     :=
-    r_{\mathrm{last}}+\gamma v_{\mathrm{boot}}-v_{\mathrm{last}}.
+    \delta_{i,j}
+    +
+    \gamma\lambda_{\mathrm{critic}}
+    A^V_{\operatorname{next}(i,j)}.
 \]
-Since no later TD residuals were sampled, initialize the GAE carry as $A_{\mathrm{next}}:=0$, giving
+The actor uses $A^\pi_{i,j}$ in the policy objective. The critic target is
 \[
-    A_{\mathrm{last}}:=\delta_{\mathrm{last}}.
+    G_{i,j}
+    :=
+    \operatorname{stopgrad}\left(v_{i,j}+A^V_{i,j}\right),
 \]
-The bootstrap value represents the unobserved future return. Setting $v_{\mathrm{boot}}:=0$ for an ordinary truncation would incorrectly treat the truncation as failure or termination.
+and a typical value loss is
+\[
+    L_V
+    =
+    \frac{1}{2|\mathcal{A}|}\sum_{(i,j)\in\mathcal{A}}
+    \left(V_\phi(s_{i,j})-G_{i,j}\right)^2,
+\]
+where $\mathcal{A}$ is the set of model-generated action-token positions. Thus the value loss is defined only for states preceding model-generated action tokens. In the skip-observation formulation, the natural length is
+\[
+    l=\sum_i n_i,
+\]
+the number of model-generated action tokens. Counting observation tokens would make tool-output verbosity change $\lambda_{\mathrm{policy}}$, even though observation-token positions are excluded from the GAE recursion.
+
+\paragraph{What ``skip observation'' means.}
+Skipping observation tokens does not mean that the critic ignores observations. The critic evaluates
+\[
+    v_{i+1,0}=V_\phi(s_{i+1,0}),
+\]
+and $s_{i+1,0}$ contains the observation returned after action $a_i$. Therefore, the observation directly affects both the next value prediction and the next policy distribution. What is skipped is only the insertion of individual observation-token positions into the GAE time axis:
+\begin{itemize}
+    \item observation tokens are not policy actions;
+    \item no policy advantages are assigned to observation tokens;
+    \item no TD residuals are formed between consecutive observation-token positions;
+    \item no GAE carry is repeatedly decayed through the observation's token length;
+    \item the last action token connects directly to the next generated action token.
+\end{itemize}
+Thus, the observation remains in the state, but observation-token positions are removed from the GAE recursion. The paper's claim that this ``filters out the stochasticity of environment feedback'' should be interpreted carefully: the randomness and content of $o_{i+1}$ still affect $s_{i+1,0}$, $v_{i+1,0}$, and $\pi_\theta(\cdot\mid s_{i+1,0})$. What the method removes is dependence on intermediate value predictions within the observation span, observation tokenization, observation length, and repeated $\gamma\lambda$ decay across externally generated tokens.
 
 \subsection{Practical Considerations}
 
@@ -296,3 +359,69 @@ A strong hybrid is often:
 \end{center}
 
 For diagnosing whether the extra SAO masking is helping, the most informative measurements are not merely the aggregate clip fraction. Track the four A-by-r quadrants separately, the accepted-token fraction by actor version, importance-weight effective sample size, log-ratio quantiles, and the gradient norm contributed by the $A<0,r>u$ quadrant. That last quadrant is where SAO is most likely to gain stability and where it sacrifices the strongest potentially corrective PPO signal.
+
+\paragraph{Action Masking.}
+
+Let the complete tokenized trajectory be $x_0,x_1,\ldots,x_{T-1}$. Define the action mask as
+\[M_p^{\text{action}}=\mathbf{1}\{x_p \text{ is generated by the policy}\}.\]
+
+Suppose $x_p$ is a generated action token, so $M_p^{\text{action}}=1$. Its pre-action state is the prefix before that token,
+\[
+    s_p=x_{<p}=x_{\le p-1}.
+\]
+If the transformer value head emits
+\[
+    \bar v_t:=V_\phi(x_{\le t}),
+\]
+then the value associated with action token $x_p$ is
+\[
+    v_p:=V_\phi(s_p)=V_\phi(x_{\le p-1})=\bar v_{p-1}.
+\]
+Therefore, when the critic target for action token $x_p$ is denoted by $G_p$, the physical-token value loss can be written as
+\[
+    L_V
+    =
+    \frac{1}{\sum_{p=1}^{T-1}M_p^{\text{action}}}
+    \sum_{p=1}^{T-1}M_p^{\text{action}}
+    \left(\bar v_{p-1}-\operatorname{stopgrad}(G_p)\right)^2.
+\]
+Note that the index $p$ starts at 1 because $x_0$ is not an action token (assuming non-empty context).
+Equivalently, reindex with $t=p-1$:
+\[
+    L_V
+    =
+    \frac{1}{\sum_{t=0}^{T-2}M_{t+1}^{\text{action}}}
+    \sum_{t=0}^{T-2}M_{t+1}^{\text{action}}
+    \left(\bar v_t-\operatorname{stopgrad}(G_{t+1})\right)^2.
+\]
+Thus the implementation mask for critic outputs is a one-token-left shift of the action mask:
+\[
+    M_t^{\text{value}}=M_{t+1}^{\text{action}},
+    \qquad t=0,\ldots,T-2.
+\]
+\paragraph{Cleaner implementation convention.}
+The least confusing implementation is to shift logits, values, labels, targets, and masks into the same coordinate system. After the shift, every index refers to the same predicted action position, so the explicit $t+1$ offset disappears from the loss code:
+\begin{codeblock}[language=Python]
+# Raw output at position t represents/predicts the state or token at t+1.
+pred_logits = logits[:, :-1]
+pred_values = raw_values[:, :-1]
+
+target_tokens = input_ids[:, 1:]
+policy_advantages = advantages[:, 1:]
+value_targets = returns[:, 1:]
+
+decision_mask = action_mask[:, 1:]
+dis_mask = ratio_in_trust_region[:, 1:] # 1-eps_low < r < 1 + eps_high
+
+policy_mask = decision_mask * dis_mask
+value_mask = decision_mask
+
+# The losses are conceptually
+policy_loss = (
+    token_policy_loss(pred_logits, target_tokens, policy_advantages)
+    * policy_mask).sum() / policy_mask.sum().clamp_min(1)
+
+value_loss = (
+    (pred_values - value_targets.detach()).square()
+    * value_mask).sum() / value_mask.sum().clamp_min(1)
+\end{codeblock}

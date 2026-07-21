@@ -1,7 +1,7 @@
 \usepackage{mathtools,amssymb,amsfonts,amsthm,bm,bbm}   % Math Presets
 \usepackage{array,tabularx,booktabs}                % Table Presets
 \usepackage{graphicx,wrapfig,float,caption}         % Figure Presets
-\usepackage{setspace,multicol}                      % Text Presets
+\usepackage{setspace,multicol,listings}             % Text Presets
 \usepackage{algorithm,algpseudocode, algorithmicx}                % Algorithms Presets
 \setlength\parindent{0pt}
 \usepackage{hyperref}
@@ -32,6 +32,47 @@ urlcolor=pink,
 \definecolor{UIUCorange}{HTML}{F5821E} % uiuc heritage orange 
 \newcommand{\orange}[1]{\textcolor{UIUCorange}{#1}}
 \newcommand{\blue}[1]{\textcolor{UIUClightblue}{#1}}
+
+\definecolor{codebg}{HTML}{F6F8FA}
+\definecolor{codeborder}{HTML}{D0D7DE}
+\definecolor{codetext}{HTML}{24292F}
+\definecolor{codecomment}{HTML}{6E7781}
+\definecolor{codekeyword}{HTML}{8250DF}
+\definecolor{codestring}{HTML}{0A3069}
+
+\lstdefinestyle{codeblockstyle}{
+    basicstyle=\ttfamily\small\color{codetext},
+    keywordstyle=\color{codekeyword},
+    commentstyle=\color{codecomment}\itshape,
+    stringstyle=\color{codestring},
+    backgroundcolor=\color{codebg},
+    columns=fullflexible,
+    keepspaces=true,
+    showstringspaces=false,
+    breaklines=true,
+    breakatwhitespace=false,
+    frame=leftline,
+    rulecolor=\color{codeborder},
+    framerule=2pt,
+    xleftmargin=2.75em,
+    xrightmargin=0.5em,
+    framexleftmargin=1.25em,
+    framexrightmargin=0.5em,
+    framextopmargin=0.65em,
+    framexbottommargin=0.65em,
+    aboveskip=0.8\baselineskip,
+    belowskip=0.8\baselineskip,
+    tabsize=4,
+    captionpos=b,
+    numbers=left,
+    numberstyle=\scriptsize\color{codecomment},
+    numbersep=2.5em,
+    stepnumber=1,
+}
+
+\lstnewenvironment{codeblock}[1][]{
+    \lstset{style=codeblockstyle,#1}
+}{}
 
 
 \setlength{\headsep}{15pt}

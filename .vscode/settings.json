@@ -13,15 +13,19 @@
   "latex-workshop.view.pdf.viewer": "tab",
   "latex-workshop.view.pdf.ref.viewer": "tabOrBrowser",
   "latex-workshop.view.pdf.tab.editorGroup": "right",
-  "latex-workshop.latex.autoClean.run": "onBuilt",
+  // "latex-workshop.latex.autoClean.run": "onBuilt",
+  // set value to "never" to allow faster builds
+  "latex-workshop.latex.autoClean.run": "never",
   "latex-workshop.latex.clean.method": "glob",
   "latex-workshop.latex.clean.subfolder.enabled": true,
   "latex-workshop.latex.clean.fileTypes": [
     "*.synctex.gz",
     "*.aux",
     "*.blg",
+    "*.bcf",
     "*.bbl",
     "*.log",
+    "*.run.xml",
     "*.toc",
     "*.out",
     "*.fls",
@@ -35,10 +39,10 @@
       ]
     },
     {
-      "name": "pdflatex -> bibtex -> pdflatex * 2",
+      "name": "pdflatex -> biber -> pdflatex * 2",
       "tools": [
         "pdflatex",
-        "bibtex",
+        "biber",
         "pdflatex",
         "pdflatex"
       ]
@@ -70,8 +74,8 @@
       "env": {}
     },
     {
-      "name": "bibtex",
-      "command": "bibtex",
+      "name": "biber",
+      "command": "biber",
       "args": [
         "%DOCFILE%"
       ],

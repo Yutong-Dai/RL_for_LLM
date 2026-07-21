@@ -4,7 +4,7 @@
 \usepackage{yfd,symbols}
 \usepackage{xcolor}
 \usepackage{fancyhdr}
-\usepackage{ulem}
+\usepackage[normalem]{ulem}
 \pagestyle{fancy}
 \fancyhead{}
 \fancyfoot{}
@@ -13,9 +13,21 @@
 \fancyhead[R]{\normalsize\bf\sffamily Last Update: \today}
 \renewcommand{\headrulewidth}{1pt}
 
-\usepackage{natbib}
-% modification to natbib citations
-\setcitestyle{authoryear,round,citesep={;},aysep={,},yysep={;}}
+\usepackage[
+    backend=biber,
+    style=authoryear,
+    natbib=true,
+    giveninits=true,
+    uniquename=init,
+    maxbibnames=10,
+    minbibnames=10,
+    maxcitenames=2,
+    mincitenames=1
+]{biblatex}
+\addbibresource{ref.bib}
+\DeclareDelimFormat{nameyeardelim}{\addcomma\space}
+\DeclareDelimFormat{multicitedelim}{\addsemicolon\space}
+\DeclareDelimFormat{compcitedelim}{\addsemicolon\space}
 
 
 \begin{document}
@@ -47,8 +59,7 @@
 
 
 \newpage
-\bibliographystyle{apalike}
-\bibliography{ref}
+\printbibliography
 \end{document}
 
 
