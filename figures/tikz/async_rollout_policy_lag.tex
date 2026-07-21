@@ -1,4 +1,4 @@
-\documentclass[tikz,border=5pt]{standalone}
+\documentclass[tikz,border=6pt]{standalone}
 \usepackage{amsmath}
 \usetikzlibrary{arrows.meta,positioning}
 
@@ -6,64 +6,67 @@
 \begin{tikzpicture}[
   font=\scriptsize,
   >=Latex,
+  x=1cm,
+  y=1cm,
   timeaxis/.style={->, thick},
-  checkpoint/.style={circle, draw=blue!60!black, fill=blue!10, minimum size=9mm},
-  segmenta/.style={line width=5pt, orange!85!black, line cap=round},
-  segmentb/.style={line width=5pt, red!70!black, line cap=round},
-  guide/.style={dashed, gray!55},
+  checkpoint/.style={circle, draw=blue!60!black, fill=blue!10, minimum size=11.1mm, align=center},
+  rolloutk/.style={line width=5pt, orange!85!black, line cap=round},
+  rolloutkp/.style={line width=5pt, red!70!black, line cap=round},
+  refresh/.style={->, thick, blue!65!black},
+  lane/.style={gray!35},
   note/.style={align=center},
-  batch/.style={rounded corners=3pt, draw=green!45!black, fill=green!8, thick},
-  buffer/.style={rounded corners=3pt, draw=blue!60!black, fill=blue!6, thick}
+  smallnote/.style={align=center, font=\tiny},
+  labelbox/.style={rounded corners=2pt, fill=white, inner sep=1.5pt, align=center},
+  tag/.style={rounded corners=3pt, draw=gray!50, fill=gray!7, align=center, inner sep=2pt, text width=2.65cm}
 ]
 
-% Wall-clock axis and trainer checkpoints.
-\draw[timeaxis] (0,4.45) -- (10.8,4.45) node[right] {wall-clock time};
-\node[above] at (5.4,4.85) {rollout workers and trainer run concurrently};
+% Time axis and trainer state.
+\draw[timeaxis] (0.7,5.1) -- (11.6,5.1) node[right] {wall-clock time};
+\node[checkpoint] (actork) at (1.35,5.1) {$\pi_\theta^{k}$};
+\node[checkpoint] (actorkp) at (5.55,5.1) {$\pi_\theta^{k+1}$};
+\node[smallnote, above=2mm of actork] {trainer actor};
+\node[smallnote, above=2mm of actorkp] {trainer update};
 
-\node[checkpoint] (oldk) at (1.1,4.45) {$\pi_{\theta_{\mathrm{old}}}^{k}$};
-\node[checkpoint] (oldkp1) at (6.2,4.45) {$\pi_{\theta_{\mathrm{old}}}^{k+1}$};
+% Rollout engine served weights.
+\node[anchor=east] at (1.05,3.85) {rollout engine};
+\draw[rolloutk] (1.35,3.85) -- (6.55,3.85);
+\draw[rolloutkp] (7.20,3.85) -- (10.95,3.85);
+\node[labelbox, above=1.5mm] at (3.95,3.85)
+  {serving $\pi_{\theta_{\mathrm{rollout}}}^{k}$};
+\node[labelbox, above=1.5mm] at (9.05,3.85)
+  {serving $\pi_{\theta_{\mathrm{rollout}}}^{k+1}$};
 
-\node[below=3mm of oldk, note] {workers pull\\snapshot $k$};
-\node[below=3mm of oldkp1, note] {update publishes\\snapshot $k+1$};
+\draw[refresh] (5.98,4.72) -- (6.55,3.90);
+\node[labelbox] at (6.38,4.40) {publish};
+\draw[refresh] (6.55,3.85) -- (7.20,3.85);
+% \draw[<->, purple!70!black, thick] (5.55,3.42) -- (6.55,3.42);
+% \node[smallnote, purple!70!black] at (6.05,3.18)
+%   {lag: actor $k{+}1$, rollout $k$};
 
-% Rollout stream.
-\draw[batch] (0.55,1.25) rectangle (9.55,3.45);
-\node[green!35!black, note] at (5.05,3.25)
-  {rollout stream / collection window};
+% Three example trajectories.
+\node[anchor=east, align=right] at (1.40,2.45) {trajectory 1};
+\draw[lane] (1.65,2.45) -- (10.95,2.45);
+\draw[rolloutk] (1.95,2.45) -- (5.25,2.45);
+\node[tag, anchor=west] at (5.55,2.45)
+  {tokens from\\$\pi_{\theta_{\mathrm{rollout}}}^{k}$};
 
-% Pull arrows from trainer checkpoints into the batch.
-\draw[->, guide] (oldk) -- (1.1,3.45);
-\draw[->, guide] (oldkp1) -- (6.2,3.45);
-\draw[guide] (6.2,3.45) -- (6.2,1.25);
+\node[anchor=east, align=right] at (1.40,1.35) {trajectory 2};
+\draw[lane] (1.65,1.35) -- (10.95,1.35);
+\draw[rolloutkp] (7.20,1.35) -- (9.25,1.35);
+\node[tag, anchor=west] at (3.70,1.35)
+  {tokens from\\$\pi_{\theta_{\mathrm{rollout}}}^{k+1}$};
 
-% Staggered trajectory intervals.
-\node[anchor=east] at (1.05,2.8) {$\tau_1$};
-\draw[segmenta] (1.25,2.8) -- (3.25,2.8);
-\node[anchor=west] at (3.45,2.8)
-  {$\pi_{\theta_{\mathrm{rollout}}}^{k}$};
+\node[anchor=east, align=right] at (1.40,0.25) {trajectory 3};
+\draw[lane] (1.65,0.25) -- (10.95,0.25);
+\draw[rolloutk] (3.15,0.25) -- (6.55,0.25);
+\draw[rolloutkp] (7.20,0.25) -- (9.85,0.25);
+\node[tag, anchor=west] at (6.00,-0.30)
+  {tokens split\\$k \rightarrow k{+}1$};
 
-\node[anchor=east] at (1.05,2.15) {$\tau_2$};
-\draw[segmentb] (6.55,2.15) -- (8.55,2.15);
-\node[anchor=west] at (8.75,2.15)
-  {$\pi_{\theta_{\mathrm{rollout}}}^{k+1}$};
-
-\node[anchor=east] at (1.05,1.5) {$\tau_3$};
-\draw[segmenta] (4.35,1.5) -- (6.2,1.5);
-\draw[segmentb] (6.2,1.5) -- (8.15,1.5);
-\draw[black, thick] (6.2,1.32) -- (6.2,1.68);
-\node[anchor=west] at (8.35,1.5)
-  {$\pi_{\theta_{\mathrm{rollout}}}^{k}\!\to\!\pi_{\theta_{\mathrm{rollout}}}^{k+1}$};
-\node[below=1mm, note] at (6.2,1.32) {refresh};
-
-% Trainer buffer and update.
-\draw[buffer] (2.25,0.15) rectangle (5.2,0.8);
-\node[blue!50!black, note] at (3.72,0.48)
-  {trainer buffer\\updates when threshold is met};
-\draw[->, blue!60!black, thick] (3.25,2.55) -- (3.25,0.8);
-\draw[->, blue!60!black, thick] (5.2,0.48) -- node[below, black] {publish} (6.2,4.02);
-
-\node[green!35!black, note] at (5.0,-0.28)
-  {store rollout-time $\log \pi_{\theta_{\mathrm{rollout}}}(a_t|s_t)$ for each sampled token/action};
+\node[anchor=west, align=left] at (0.95,-1.00)
+  {A training window can contain rollouts from different rollout-engine snapshots.};
+\node[anchor=west, align=left] at (0.95,-1.45)
+  {The stored rollout log-probability identifies the behavior policy for each sampled token.};
 
 \end{tikzpicture}
 \end{document}

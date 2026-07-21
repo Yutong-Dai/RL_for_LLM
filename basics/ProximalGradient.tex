@@ -72,9 +72,10 @@ Some popular choices of $\Phi_t$\citep{schulman2015high}, hence the gradient est
 
 \subsection{REINFORCE algorithm}
 If one adopts the Reward-to-go unbiased estimator, we can reach to the REINFORCE algorithm. The objective function is
-$$
+\begin{equation}
+\label{eq:reinforce.obj}
      \Jcal(\theta)  = \Embb_{\tau\sim \pi_\theta}\left(\sum_{t=0}^{T-1}G_t(\tau)\log \pi_\theta\left(a_t | s_t\right) \right)
-$$
+\end{equation}
 where $G_t(\tau) = \sum_{t'=t}^{T-1}\gamma^{t'-t}r_{t'}$. 
 This method drops the need on the Value function but suffers from the high variance in gradient estimates. The algorithm is summarized in Algorithm~\ref{algo:reinforce}
 
