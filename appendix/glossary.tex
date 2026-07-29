@@ -1,0 +1,328 @@
+\section{Glossary}
+
+\subsection{Reward Model and Critic Model}
+
+\begin{description}
+    \item[Reward model.] A model that scores a completed unit of behavior. In single-step LLM RL, the unit is usually the whole response $y$ to a prompt $x$, and the reward model returns an outcome reward $r(x,y)$ only after the response is finished. It acts like the grader: the policy writes the answer first, then the reward model assigns the score being optimized.
+
+    In multi-step LLM RL, such as tool-use or agentic interaction, the completed unit may be an action span $a_i$, a full trajectory, or the final answer after several environment observations. The reward signal may therefore arrive after each completed action, as $R_i$, or only at the end of the episode. In either case, the reward model or verifier evaluates completed behavior, not a half-written prefix.
+
+    \item[Critic model.] A model that predicts the eventual return from the current partial state, usually written as a value function $V_\phi(s_t)$ over the prefix state $s_t$. Unlike the reward model, the critic does not grade the finished answer directly; it is a running estimate of what the future reward signal will imply for the current token position.
+
+    In single-step LLM RL, the critic looks at a partially generated response prefix and predicts the return induced by the final outcome reward $r(x,y)$, possibly together with token-level KL penalties or other shaping terms. In multi-step LLM RL, the critic evaluates states such as $s_{i,j}$ before generating token $a_{i,j}$, and predicts the return over future tokens, future action spans, environment observations, and later rewards. Thus the critic is a partial-credit forecaster for prefixes, while the reward model is the grader for completed behavior. The critic is trained by regression to a return target
+\end{description}
+
+\subsection{How to train a Critic Model under the PPO framework}
+
+The critic $V_\phi$ is a separate network---typically the policy or reward model
+with the vocabulary head replaced by a scalar head---which emits one number per
+position in a single causal forward pass. It is defined by
+%
+\begin{equation}
+  V_{\phi}(s_t) \;=\; \E\!\left[\, r_t + \gamma r_{t+1} + \gamma^2 r_{t+2} + \cdots \,\middle|\, s_t \right],
+  \label{eq:vdef}
+\end{equation}
+%
+i.e.\ the expected discounted reward from time $t$ \emph{onward, inclusive of
+$r_t$}. 
+
+\subsubsection{TD residual}
+
+The temporal difference residual is defined as
+\begin{equation}
+    \delta_t \;=\; \underbrace{r_t + \gamma V_{\phi}(s_{t+1})}_{\text{forecast \emph{after} the step}}
+               \;-\; \underbrace{V_{\phi}(s_t)}_{\text{forecast \emph{before} the step}}
+    \label{eq:delta}
+  \end{equation}
+   
+  Read $V_\phi$ as a live win-probability meter. Before step $t$ you believed
+  $V_{\phi}(s_t)$; after taking the step you have banked $r_t$ and can read the meter
+  again. The difference is how much your outlook improved or worsened
+  \emph{because of this step}. Positive $\delta_t$ means better news than expected. 
+   $\delta_t$ measures how badly the
+    critic contradicts itself between adjacent steps. A perfect critic has
+    $\E[\delta_t]=0$ everywhere. So $\delta$ does double duty---its expectation being
+    nonzero trains the critic, its realization trains the actor.
+
+\subsubsection{The $n$-step ladder and GAE}
+
+Everything about GAE rests on the following cancellation. Substitute
+\eqref{eq:delta} into a discounted sum of residuals, writing $V_{k}$ for
+$V_\phi(s_k)$, and take $t=0$, $T=3$ for concreteness:
+%
+\begin{equation}
+\begin{aligned}
+\gamma^0\delta_0 &= r_0        &&+\ \gamma V_{1}   &&-\ V_{0}\\
+\gamma^1\delta_1 &= \gamma r_1 &&+\ \gamma^2 V_{2} &&-\ \gamma V_{1}\\
+\gamma^2\delta_2 &= \gamma^2 r_2 &&+\ \gamma^3 V_{3} &&-\ \gamma^2 V_{2}\\
+\gamma^3\delta_3 &= \gamma^3 r_3 &&+\ \gamma^4 V_{4} &&-\ \gamma^3 V_{3}
+\end{aligned}
+\label{eq:telescope-rows}
+\end{equation}
+
+Consider the value terms alone. The $+\gamma V_{1}$ of the first row cancels the
+$-\gamma V_{1}$ of the second; $+\gamma^2V_{2}$ cancels $-\gamma^2V_{2}$;
+$+\gamma^3V_{3}$ cancels $-\gamma^3V_{3}$. \emph{Multiplying row $\ell$ by
+$\gamma^\ell$ is precisely what makes the powers line up}---this is the only
+reason the cancellation works. Two terms survive: $\gamma^4V_{4}$, which is zero
+by the terminal condition $V_\phi(s_{T+1})=0$, and $-V_{0}$, which has nothing
+to cancel against. In general,
+%
+\begin{equation}
+\boxed{\;\sum_{\ell=0}^{T-t}\gamma^\ell \delta_{t+\ell}
+\;=\; \underbrace{\sum_{\ell=0}^{T-t}\gamma^\ell r_{t+\ell}}_{\text{actual discounted return}} \;-\; V_{\phi}(s_t). \;}
+\label{eq:telescope}
+\end{equation}
+%
+In words: \emph{the total surprise accumulated over a trajectory equals the
+outcome minus what you believed at the start.} The total is fixed; all GAE does
+is decide \emph{when} along the trajectory that total gets booked.
+
+Note carefully that \eqref{eq:telescope} is not equation~\eqref{eq:gae} below---it
+is that equation evaluated at $\lambda=1$. The telescoping only goes through with
+weights $\gamma^\ell$; the general $(\gamma\lambda)^\ell$ case is built later.
+   
+
+Truncating \eqref{eq:telescope} after $n$ terms gives the \textbf{$n$-step
+advantage estimator}
+%
+\begin{equation}
+A^{(n)}_t \;\equiv\; \sum_{\ell=0}^{n-1}\gamma^\ell\delta_{t+\ell},
+\label{eq:nstep-adv}
+\end{equation}
+%
+which interpolates between two extremes. At $n=1$, $A^{(1)}_t=\delta_t$: minimum
+variance (only one step of randomness enters) but maximum bias, since you trust
+the critic's forecast at $t{+}1$ completely. At $n = T-t+1$ the sum runs to the
+end and \eqref{eq:telescope} makes it the Monte Carlo advantage
+$\big(\sum_\ell \gamma^\ell r_{t+\ell}\big) - V_{\phi}(s_t)$: unbiased, since the critic
+appears only as a constant baseline, but maximum variance, because every random
+event after step $t$ is now folded in---including events the token had no
+influence over.
+
+GAE takes an exponentially weighted average over the whole ladder rather than
+picking one rung:
+%
+\begin{equation}
+A^{\mathrm{GAE}}_t \;=\; (1-\lambda)\sum_{n\ge 1}\lambda^{n-1}\, A^{(n)}_t.
+\label{eq:gae-blend}
+\end{equation}
+%
+The weights $(1-\lambda)\lambda^{n-1}$ sum to one, so this is a genuine average.
+Substituting \eqref{eq:nstep-adv} and exchanging the order of summation, the
+coefficient on $\delta_{t+\ell}$ is
+%
+\begin{equation}
+(1-\lambda)\,\gamma^\ell \sum_{n \ge \ell+1}\lambda^{n-1}
+\;=\; (1-\lambda)\,\gamma^\ell \cdot \frac{\lambda^{\ell}}{1-\lambda}
+\;=\; (\gamma\lambda)^\ell ,
+\end{equation}
+%
+which recovers the familiar closed form
+%
+\begin{equation}
+\boxed{\;A^{\mathrm{GAE}}_t \;=\; \sum_{\ell=0}^{T-t}(\gamma\lambda)^\ell\,\delta_{t+\ell}.\;}
+\label{eq:gae}
+\end{equation}
+
+The parameter $\lambda$ controls how far future TD residuals are allowed to
+flow back to the current token. At $\lambda=0$, only the immediate residual
+$\delta_t$ is used, so the estimate is strongly bootstrapped from the critic:
+lower variance, but more bias if the critic is wrong. At $\lambda=1$, every
+future residual is included with only the discount factor $\gamma^\ell$, giving
+the Monte Carlo-style estimate: lower bias, but higher variance because all
+future randomness is credited backward. Intermediate values make this an
+exponential credit-assignment rule. In LLM RL, where one often sets
+$\gamma=1$ to avoid washing out long completions, $\lambda$ becomes the main
+knob deciding how much delayed reward from later tokens, later tool calls, or
+the final verifier should influence earlier token decisions.
+
+
+\subsubsection{The return target}
+  
+The critic needs a regression target for \eqref{eq:vf} below. There is no unique
+choice; there is a ladder, indexed by how many real steps you take before letting
+the critic guess the remainder:
+%
+\begin{equation}
+  \hat{R}^{(n)}_t \;=\; \underbrace{r_t + \gamma r_{t+1} + \cdots + \gamma^{n-1}r_{t+n-1}}_{n \text{ steps of observed reward}}
+  \;+\; \underbrace{\gamma A^{(n)} V_\phi(s_{t+n})}_{\text{critic guesses the tail}}.
+  \label{eq:nstep-ret}
+\end{equation}
+%
+At $n=1$ this is the plain TD target $r_t + \gamma V_{\phi}(s_{t+1})$; at
+$n = T-t+1$ the bootstrap term vanishes and it is the full observed return.
+   
+The key observation is that \emph{each rung of this ladder differs from the
+matching rung of the advantage ladder by exactly $V_{\phi}(s_t)$.} Subtracting $V_{\phi}(s_t)$
+from \eqref{eq:nstep-ret} and telescoping exactly as in
+\eqref{eq:telescope-rows} yields $\hat{R}^{(n)}_t - V_{\phi}(s_t) = A^{(n)}_t$, i.e.
+%
+\begin{equation}
+  A^{(n)}_t = \hat{R}^{(n)}_t - V_{\phi}(s_t)
+  \qquad\Longleftrightarrow\qquad
+  \hat{R}^{(n)}_t = A^{(n)}_t + V_{\phi}(s_t).
+\end{equation}
+%
+Return targets and advantages are \textbf{the same object shifted by the
+baseline} ---and crucially, the shift $V(s_{t})$ is \emph{the same for every rung}:
+it carries no $n$.
+ 
+Apply the averaging operator
+$\sum_{n\ge1}(1-\lambda)\lambda^{n-1}(\cdot)$ to both sides. On the left it
+produces the $\lambda$-return by definition; on the right it splits in two, and
+because $V_{\phi}(s_{t})$ is constant in $n$ it factors straight out of the second sum:
+%
+\begin{equation}
+  \underbrace{\sum_{n\ge1}(1-\lambda)\lambda^{n-1}\hat{R}^{(n)}_t}_{\textstyle \hat{R}^\lambda_t}
+  \;=\; \underbrace{\sum_{n\ge1}(1-\lambda)\lambda^{n-1}A^{(n)}_t}_{\textstyle A^{\mathrm{GAE}}_t \ \text{by \eqref{eq:gae-blend}}}
+  \;+\; V_{\phi}(s_{t})\underbrace{\sum_{n\ge1}(1-\lambda)\lambda^{n-1}}_{\textstyle =\,1}.
+  \label{eq:blend-both-sides}
+\end{equation}
+%
+The leftover weight sum is exactly $1$---this is where it matters that
+\eqref{eq:gae-blend} is a genuine \emph{average} and not an arbitrary linear
+combination---so the baseline passes through untouched and
+%
+\begin{equation}
+  \boxed{\;\hat{R}_t \;\equiv\; \hat{R}^\lambda_t \;=\; A^{\mathrm{GAE}}_t + V_{\phi}(s_{t}).\;}
+  \label{eq:target}
+\end{equation}
+%
+Note that no particular $n$ has been selected here; the identity holds because
+\emph{every} rung shares the same baseline. The bare $\hat{R}_t$ drops the $\lambda$ superscript
+because this blended quantity is \emph{the} target: the one
+equation~\eqref{eq:vf} regresses against. So \eqref{eq:target} is not a new estimator---it is a rearrangement. There is one
+blended estimate of how good $s_t$ turned out to be. Viewed as a \emph{deviation
+from the critic's prediction} it is the advantage that drives the actor; viewed as
+an \emph{absolute number} it is the target the critic regresses toward:
+%
+\begin{equation}
+  \mathcal{L}^{\mathrm{VF}}(\phi) \;=\; \E_t\!\left[\big(V_{\phi}(s_t) - \hat{R}_t\big)^2\right].
+  \label{eq:vf}
+\end{equation}
+% 
+Informally: $V_{\phi}(s_t)$ is the prior, $A^{\mathrm{GAE}}_t$ is the accumulated ($\gamma$-discounted,
+$\lambda$-decayed) news that arrived afterward, and the sum is the posterior
+estimate you now wish the critic had produced.
+   
+\textbf{So is the critic minimizing the advantage?}
+ 
+Substituting \eqref{eq:target} into \eqref{eq:vf} gives
+$V_{\phi}(s_t) - \hat{R}_t = -A^{\mathrm{GAE}}_t$, hence
+%
+\begin{equation}
+  \mathcal{L}^{\mathrm{VF}}(\phi) \;=\; \E_t\!\left[\big(A^{\mathrm{GAE}}_t\big)^2\right].
+  \label{eq:vf-as-adv}
+\end{equation}
+%
+The critic loss \emph{is} the squared advantage. Two qualifications keep this from
+misleading.
+ 
+\paragraph{The target is detached.} $\hat{R}_t$ is computed once from the
+\emph{old} critic, before the optimization epochs, and frozen; gradients flow only
+through the fresh $V_{\phi}(s_t)$ on the left. So \eqref{eq:vf-as-adv} holds numerically
+at the first inner epoch, where $\phi = \phi_{\mathrm{old}}$, and thereafter the
+loss is a regression against a stale constant. 
+\begin{codeblock}
+with torch.no_grad():                            # <-- everything here is frozen
+  values     = critic(states)                    # V_{phi_old}
+  advantages = compute_gae(rewards, values, gamma, lambda)
+  returns    = advantages + values               # hat{R}, a constant tensor
+
+for epoch in range(K):                             # PPO inner epochs
+  v = critic(states)                             # only THIS carries gradient
+  vf_loss = ((v - returns) ** 2).mean()
+
+\end{codeblock}
+
+What matters is the gradient,
+%
+\begin{equation}
+  \nabla_\phi \mathcal{L}^{\mathrm{VF}}
+  \;=\; 2\,\E_t\!\left[\big(V_{\phi}(s_t) - \hat{R}_t\big)\nabla_\phi V_{\phi}(s_t)\right]
+  \;=\; -2\,\E_t\!\left[A^{\mathrm{GAE}}_t\,\nabla_\phi V_{\phi}(s_t)\right],
+\end{equation}
+%
+which says: \emph{the advantage is the critic's error signal.} Positive advantage
+means the state turned out better than predicted, so raise $V_{\phi}(s_t)$ by an amount
+proportional to $|A_t|$. This is exactly the forward view of TD($\lambda$),
+$\Delta\phi \propto (\hat{R}^\lambda_t - V_{\phi}(s_t))\nabla_\phi V_{\phi}(s_t)$, rewritten as a
+squared error so that autodiff performs the update. Letting gradients flow through
+the bootstrapped $V_\phi(s_{t+n})$ inside $\hat{R}_t$ instead yields Baird's
+residual-gradient method---a different algorithm with a different fixed point,
+which invites the critic to reduce loss by dragging $V_\phi(s_{t+n})$ toward
+$V_{\phi}(s_t)$, satisfying self-consistency by chasing its own tail rather than by
+becoming accurate. Semi-gradient (detached target) is standard. At $\lambda = 1$
+the distinction is moot, since $\hat{R}_t$ is the observed return and contains no
+$\phi$.
+ 
+\paragraph{Minimizing $\E[A^2]$ does not drive $A$ to zero.} The minimizer of a
+squared error is the conditional mean, $V^\star(s) = \E[\hat{R}_t \mid s_t = s]$,
+and the residual there is the conditional variance
+$\operatorname{Var}(\hat{R}_t \mid s_t)$---irreducible however good the critic
+becomes. A perfect critic yields $\E[A_t \mid s_t] = 0$, not $A_t = 0$.
+ 
+There is a structural reason it cannot collapse: $V_{\phi}(s_t)$ never sees the action
+$a_t$. It is evaluated on the prefix \emph{before} the token is sampled, so it can
+represent only the average over actions under the current policy. The
+action-specific deviation $A_t = Q(s_t,a_t) - V_{\phi}(s_t)$ is precisely the component
+the critic is architecturally forbidden to absorb. It strips out what is
+predictable from the state and leaves untouched the question of which token was
+actually chosen.
+ 
+% That remainder is the entire point, because the policy gradient is
+% %
+% \begin{equation}
+%   \nabla_\theta J \;=\; \E_t\!\left[A_t \,\nabla_\theta \log \pi_\theta(a_t \mid s_t)\right].
+% \end{equation}
+% %
+% Were the critic able to drive every $A_t$ to zero, PPO would have no learning
+% signal whatsoever. The two losses are therefore not in competition but a division
+% of labor: the critic explains away everything explainable from the state, and
+% whatever survives is genuine news about the action. A better critic does not
+% shrink the actor's signal---it purifies it, removing state-baseline noise and
+% sharpening attribution onto the token actually chosen. This is the whole
+% variance-reduction case for maintaining a critic at all.
+
+
+\subsubsection{Implementation notes}
+
+   
+\paragraph{Backward recursion.} Equation \eqref{eq:gae} is never evaluated as a
+sum. Expanding it one term gives the recursion actually used,
+%
+\begin{equation}
+  A_t \;=\; \delta_t + \gamma\lambda\,A_{t+1}, \qquad A_{T+1} = 0,
+\end{equation}
+%
+computed in a single backward pass---``my advantage is my own surprise, plus a
+discounted share of everything that surprises the future.'' Equation
+\eqref{eq:target} is then one addition, \texttt{returns = advantages + values},
+which is the real reason the target is written in that form.
+  
+\paragraph{Normalization ordering.} Advantages are usually normalized to zero mean
+and unit variance before the policy loss. The return targets must be computed
+\emph{before} that normalization, or the critic is trained toward a rescaled
+quantity. This is a common and quiet bug.
+  
+\paragraph{Discounting at token granularity.} A 20k-token rollout with
+$\gamma = 0.99$ discounts the terminal reward by roughly $e^{-200}$, annihilating
+the signal. Hence $\gamma = 1$ is effectively universal in LLM RL, which leaves
+$\lambda$ carrying the entire bias--variance tradeoff by itself.
+  
+\paragraph{Masking observations.} Failing to mask environment tokens out of the
+policy loss trains the model to \emph{predict tool outputs}, so it learns to
+hallucinate plausible observations and answer from them. The environment gets
+distilled into the policy and rewarded for confabulating.
+  
+\paragraph{Stochastic transitions at tool boundaries.} In single-turn LLM RL the
+transition is deterministic---$s_{t+1}$ is $s_t$ with your own token appended---so
+all randomness lives in the policy. At a tool boundary the transition is genuinely
+stochastic: the same query may return an excellent document or garbage. The
+residual across that boundary,
+$\delta_t = \gamma V_\phi(s_t \oplus \mathrm{obs}) - V_{\phi}(s_t)$, mixes skill (a
+well-formed query) with luck (a cooperative index), and PPO cannot separate them.
+At $\lambda=1$ that luck propagates undiminished back onto every earlier token,
+which is a concrete argument for $\lambda<1$---or for turn-level value
+baselines---in agentic training.

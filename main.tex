@@ -31,13 +31,15 @@
 
 
 \begin{document}
+\hypersetup{linkcolor=black}
 \tableofcontents
+\hypersetup{linkcolor=blue}
 \newpage
 
 \part{Introduction}
 
 \include{basics/background}
-\include{basics/ProximalGradient}
+\include{basics/PolicyGradient}
 
 \part{Algorithms}
     
@@ -51,12 +53,16 @@
 % \include{RLOO}
 % \include{ReMAX}
 
+\include{algortihms/contex-compression}
+
 \include{algortihms/part-async-rl}
 
 \include{algortihms/SAO}
 
 
-
+\part{Appendix}
+\appendix
+\include{appendix/glossary}
 
 \newpage
 \printbibliography

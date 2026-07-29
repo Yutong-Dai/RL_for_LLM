@@ -72,7 +72,7 @@ To put pieces together, we summarize the PPO-Clip in Algorithm~\ref{algo:ppo}.
     \State Inputs: Initial Policy network parameter $\theta_0$ and value function parameter $\phi_0$.
     \For{k=0,1,2....}
         \State Collect a set of trajectories $D_k=\{\tau_n\}_{n=1}^{N}$.
-        \State Reward-to-go calculation $G_t(\tau_n) = \sum_{t'=t}^{T_n-1}\gamma^{t'-t}r_t'$ for all $n$.
+        \State Reward-to-go calculation $G_t(\tau_n) = \sum_{t'=t}^{T_n-1}\gamma^{t'-t}r_{t'}$ for all $n$.
          \State GAE calculation $A^{\operatorname{GAE(\gamma,\lambda)}}_{\phi_k}(s_t^{(n)},a_t^{(n)})$ for all $t$ and $n$\footnote{Here $(s_t^{(n)},a_t^{(n)})$ means the state and action from t-step and n-th trajectory.}. 
         \State Approximately solve 
             \begin{align*}
