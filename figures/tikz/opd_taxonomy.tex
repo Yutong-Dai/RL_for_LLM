@@ -1,0 +1,146 @@
+\documentclass[tikz,border=6pt]{standalone}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage{xcolor}
+
+\definecolor{UIUClightblue}{HTML}{5783BC}
+\definecolor{UIUCorange}{HTML}{F5821E}
+
+\begin{document}
+\begin{tikzpicture}[
+    font=\sffamily,
+    card/.style={
+        draw=gray!28,
+        fill=gray!2,
+        rounded corners=7pt,
+        line width=0.7pt,
+        minimum width=5.25cm,
+        minimum height=4.25cm,
+        inner sep=0.28cm,
+        align=left
+    },
+    flow/.style={
+        draw=UIUClightblue!65,
+        fill=UIUClightblue!5,
+        rounded corners=9pt,
+        minimum height=0.62cm,
+        inner xsep=0.3cm,
+        font=\sffamily\scriptsize
+    }
+]
+
+\node[font=\sffamily\bfseries\LARGE, text=gray!85!black] at (5.7,3.8)
+    {On-Policy Distillation};
+\node[font=\sffamily\small, text=gray!60!black] at (5.7,3.35)
+    {A practical taxonomy of six research directions};
+
+\node[flow] (rollout) at (2.2,2.65) {\textbf{1}\quad Student rollout};
+\node[flow] (feedback) at (5.7,2.65) {\textbf{2}\quad Teacher feedback};
+\node[flow] (update) at (9.2,2.65) {\textbf{3}\quad Policy update};
+\draw[-{latex}, line width=0.8pt, draw=UIUClightblue!70]
+    (rollout.east) -- (feedback.west);
+\draw[-{latex}, line width=0.8pt, draw=UIUClightblue!70]
+    (feedback.east) -- (update.west);
+
+\node[card] at (0,0) {%
+\begin{minipage}[t][3.62cm][t]{4.65cm}
+\textcolor{UIUClightblue}{\rule{\linewidth}{2.2pt}}\\[-2pt]
+\textcolor{UIUClightblue}{\scriptsize\bfseries 01 \quad OPTIMIZATION}\\[3pt]
+{\large\bfseries Training Stabilization}\\[2pt]
+{\scriptsize\color{gray!65!black}Loss design, clipping, and masking}\\[8pt]
+{\scriptsize
+\begin{tabular}{@{}ll@{}}
+\textcolor{UIUCorange}{\bfseries $\star$ REOPOLD} &
+\textcolor{UIUCorange}{\bfseries $\star$ EOPD}\\[3pt]
+\textcolor{UIUCorange}{\bfseries $\star$ Many Faces} & DRKL\\[3pt]
+Revisiting OPD & AOPD\\[3pt]
+SCOPE & OGLS-SD\\[3pt]
+CREDIT & G-OPD\\[3pt]
+Sparse-to-Dense &
+\end{tabular}}
+\end{minipage}};
+
+\node[card] at (5.7,0) {%
+\begin{minipage}[t][3.62cm][t]{4.65cm}
+\textcolor{teal!70!black}{\rule{\linewidth}{2.2pt}}\\[-2pt]
+\textcolor{teal!70!black}{\scriptsize\bfseries 02 \quad AUTONOMY}\\[3pt]
+{\normalsize\bfseries Teacher-Free Distillation}\\[2pt]
+{\scriptsize\color{gray!65!black}Self-supervision and iterative improvement}\\[8pt]
+{\scriptsize
+\begin{tabular}{@{}ll@{}}
+\textcolor{UIUCorange}{\bfseries $\star$ SDFT} &
+\textcolor{UIUCorange}{\bfseries $\star$ OPSD}\\[3pt]
+Self-Verified & UniSD\\[3pt]
+MAIGO & ES-SSD\\[3pt]
+ROSD &
+\end{tabular}}
+\end{minipage}};
+
+\node[card] at (11.4,0) {%
+\begin{minipage}[t][3.62cm][t]{4.65cm}
+\textcolor{violet!75!black}{\rule{\linewidth}{2.2pt}}\\[-2pt]
+\textcolor{violet!75!black}{\scriptsize\bfseries 03 \quad INFORMATION}\\[3pt]
+{\large\bfseries Privileged Context}\\[2pt]
+{\scriptsize\color{gray!65!black}The teacher observes richer context}\\[8pt]
+{\scriptsize
+\begin{tabular}{@{}ll@{}}
+\textcolor{UIUCorange}{\bfseries $\star$ $\pi$-Distill} &
+\textcolor{UIUCorange}{\bfseries $\star$ SDPO}\\[3pt]
+\textcolor{UIUCorange}{\bfseries $\star$ Prefix-OPD} &
+\textcolor{UIUCorange}{\bfseries $\star$ MedicalAudit}\\[3pt]
+CPCD & HDPO\\[3pt]
+OPHSD & Search-E1\\[3pt]
+CoDistill & BRTS
+\end{tabular}}
+\end{minipage}};
+
+\node[card] at (0,-4.8) {%
+\begin{minipage}[t][3.62cm][t]{4.65cm}
+\textcolor{UIUCorange!90!black}{\rule{\linewidth}{2.2pt}}\\[-2pt]
+\textcolor{UIUCorange!90!black}{\scriptsize\bfseries 04 \quad EVALUATION}\\[3pt]
+{\large\bfseries Black-Box \& Rubric}\\[2pt]
+{\scriptsize\color{gray!65!black}Reward logic replaces direct logits}\\[8pt]
+{\scriptsize
+\begin{tabular}{@{}l@{}}
+\textcolor{UIUCorange}{\bfseries $\star$ ROPD}\\[3pt]
+OVD\\[3pt]
+MAD-OPD
+\end{tabular}}
+\end{minipage}};
+
+\node[card] at (5.7,-4.8) {%
+\begin{minipage}[t][3.62cm][t]{4.65cm}
+\textcolor{green!55!black}{\rule{\linewidth}{2.2pt}}\\[-2pt]
+\textcolor{green!55!black}{\scriptsize\bfseries 05 \quad EFFICIENCY}\\[3pt]
+{\large\bfseries Self-Compression}\\[2pt]
+{\scriptsize\color{gray!65!black}Smaller token and teacher budgets}\\[8pt]
+{\scriptsize
+\begin{tabular}{@{}l@{}}
+\textcolor{UIUCorange}{\bfseries $\star$ CRISP}\\[3pt]
+\textcolor{UIUCorange}{\bfseries $\star$ Prefix-OPD} $\dagger$\\[3pt]
+Less-is-More \qquad Lightning OPD\\[3pt]
+Sparse-to-Dense $\dagger$
+\end{tabular}}
+\end{minipage}};
+
+\node[card] at (11.4,-4.8) {%
+\begin{minipage}[t][3.62cm][t]{4.65cm}
+\textcolor{magenta!65!black}{\rule{\linewidth}{2.2pt}}\\[-2pt]
+\textcolor{magenta!65!black}{\scriptsize\bfseries 06 \quad TRANSFER}\\[3pt]
+{\large\bfseries Cross-Modal \& Domain}\\[2pt]
+{\scriptsize\color{gray!65!black}Vision, video, agents, and applications}\\[8pt]
+{\scriptsize
+\begin{tabular}{@{}ll@{}}
+\textcolor{UIUCorange}{\bfseries $\star$ Video-OPD} & Vision-OPD\\[3pt]
+PRISM & OPSDL\\[3pt]
+COPSD & OPSA\\[3pt]
+VLA-OPD &
+\end{tabular}}
+\end{minipage}};
+
+\node[anchor=west, font=\sffamily\scriptsize, text=gray!60!black]
+    at (-2.62,-7.35)
+    {\textcolor{UIUCorange}{$\star$} highlighted work
+     \qquad $\dagger$ cross-family method};
+\end{tikzpicture}
+\end{document}

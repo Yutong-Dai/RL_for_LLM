@@ -1,0 +1,353 @@
+\section{Reward Modeling}
+\label{sec:reward-modeling}
+
+A reward model (RM) replaces a hand-written objective with a learned scoring function.  For a prompt $x$ and completion $y$, it estimates a scalar or a set
+of local scores that can be used for best-of-$N$ selection, search, or policy optimization.  Unlike an environment reward, this signal is inferred from human preferences or correctness annotations and is therefore only a proxy for the desired behavior.
+
+This section uses $x$ for a prompt, $y$ for a completion, $y_c$ for a chosen completion, and $y_r$ for a rejected completion.  It is adapted from Lambert's reward-modeling chapter.\footnote{
+\url{https://rlhfbook.com/c/05-reward-models}}
+
+\subsection{Bradley--Terry Preference Reward Model}
+
+\subsubsection{Preference likelihood}
+
+The Bradley--Terry (BT) model assigns each item $i$ a positive latent strength
+$p_i$.  Its pairwise preference probability is
+\begin{equation}
+    P(i \succ j)
+    =
+    \frac{p_i}{p_i+p_j}.
+\end{equation}
+Writing $p_i=\exp(r_i)$ gives the logit parameterization
+\begin{equation}
+    P(i \succ j)
+    =
+    \frac{\exp(r_i)}{\exp(r_i)+\exp(r_j)}
+    =
+    \sigma(r_i-r_j),
+    \qquad
+    \sigma(z)=\frac{1}{1+\exp(-z)}.
+\end{equation}
+Consequently, only score differences are identifiable: replacing every score
+$r_i$ by $r_i+C$ leaves all preference probabilities unchanged.
+
+For an RM $r_\theta(x,y)$ and a preference triple
+$(x,y_c,y_r)\sim\mathcal{D}$,
+\begin{equation}
+    P_\theta(y_c\succ y_r\mid x)
+    =
+    \sigma\!\left(
+        r_\theta(x,y_c)-r_\theta(x,y_r)
+    \right).
+    \label{eq:bt-probability}
+\end{equation}
+Maximum likelihood yields the final loss function:
+\begin{align}
+    \mathcal{L}_{\mathrm{BT}}(\theta)
+    &=
+    \mathbb{E}_{(x,y_c,y_r)\sim\mathcal{D}}
+    - \log \sigma\!\left(
+        r_\theta(x,y_c)-r_\theta(x,y_r)
+    \right).
+    % &=
+    % \mathbb{E}_{(x,y_c,y_r)\sim\mathcal{D}}
+    % \operatorname{softplus}\!\left(
+    %     r_\theta(x,y_r)-r_\theta(x,y_c)
+    % \right).
+    \label{eq:bt-loss}
+\end{align}
+The log is applied before averaging; maximizing
+$\mathbb{E}[P_\theta(y_c\succ y_r\mid x)]$ is not the same likelihood
+objective.
+
+\subsubsection{Architecture}
+
+The standard architecture reuses a causal-transformer backbone and replaces
+its vocabulary projection with a scalar head.  For prompt-completion tokens
+$z=(x,y)$, let $h_t\in\mathbb{R}^d$ be the final-layer hidden state.  A common
+sequence score is
+\begin{equation}
+    r_\theta(x,y)=w^\top h_{t_{\mathrm{last}}}+b,
+\end{equation}
+where $t_{\mathrm{last}}$ is the final non-padding token, normally an EOS
+token.  Chosen and rejected sequences are scored independently by the same
+network.  The loss in \eqref{eq:bt-loss} couples only their scalar outputs.
+
+\begin{codeblock}[language=Python,caption={Minimal Bradley--Terry reward model.}]
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+class BradleyTerryRM(nn.Module):
+    def __init__(self, backbone):
+        super().__init__()
+        # Transformer producing one d-dimensional hidden state per token.
+        self.backbone = backbone
+        # Shared linear head: final token representation -> scalar reward.
+        self.reward_head = nn.Linear(backbone.config.hidden_size, 1)
+
+    def forward(self, input_ids, attention_mask):
+        """
+        Score each complete prompt-response sequence.
+
+        input_ids:      token IDs, shape [batch_size, sequence_length]
+        attention_mask: 1 for real tokens and 0 for padding, same shape
+        returns:        one unnormalized reward logit per sequence, shape [B]
+        """
+        out = self.backbone(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            output_hidden_states=True,
+            return_dict=True,
+        )
+
+        # Last transformer layer: one contextual representation per token.
+        hidden = out.hidden_states[-1]              # [B, T, d]
+
+        # Locate the final non-padding token. Unlike mask.sum() - 1, this is
+        # correct for both left-padded and right-padded batches.
+        positions = torch.arange(
+            hidden.size(1), device=hidden.device
+        ).expand_as(attention_mask)
+        last = positions.masked_fill(attention_mask == 0, -1).max(dim=1).values
+        batch = torch.arange(hidden.size(0), device=hidden.device)
+        final_hidden = hidden[batch, last]           # [B, d], usually EOS
+
+        # The score is not a probability; only score differences enter BT loss.
+        return self.reward_head(final_hidden).squeeze(-1)  # [B]
+
+def preference_loss(model, chosen, rejected):
+    """Negative log-likelihood that chosen is preferred to rejected."""
+    # Both dictionaries contain the same prompts but different completions.
+    # The same reward model (shared parameters) scores both sequences.
+    reward_chosen = model(**chosen)
+    reward_rejected = model(**rejected)
+
+    # -log sigmoid(r_chosen - r_rejected), averaged over the batch.
+    # Minimization pushes the chosen score above the rejected score.
+    return -F.logsigmoid(reward_chosen - reward_rejected).mean()
+\end{codeblock}
+
+Correct construction of the two inputs is critical: each contains the same
+prompt and exactly one completion, and the attention mask must select the
+actual final token under either left or right padding.  Reward models are
+commonly trained for only one epoch because pairwise datasets are correlated
+and overfitting can rapidly degrade held-out ranking accuracy.
+
+\subsection{Outcome Reward Models}
+
+An outcome reward model (ORM) predicts whether a completion eventually reaches
+a correct final answer.  It is trained from independently labeled examples
+$(x,y,r)$, where $r\in\{0,1\}$ denotes final-answer correctness; paired
+chosen--rejected data is unnecessary.
+
+One common ORM emits a binary logit $w_{\theta,t}$ at every completion token.
+The sequence outcome label is broadcast across completion positions while
+prompt and padding positions are masked:
+\begin{equation}
+    \mathcal{L}_{\mathrm{ORM}}(\theta)
+    =
+    -\mathbb{E}_{(x,y,r)\sim\mathcal{D}}
+    \left[
+        \frac{1}{\sum_t m_t}
+        \sum_{t=1}^{T}m_t
+        \left(
+            r\log p_{\theta,t}
+            +(1-r)\log(1-p_{\theta,t})
+        \right)
+    \right],
+    \label{eq:orm-token-loss}
+\end{equation}
+where $m_t=1$ only for completion tokens and
+$p_{\theta,t}=\sigma(w_{\theta,t})$.  These targets contain no direct
+information about whether an intermediate step is valid: every token receives
+the label determined by the final outcome.
+
+A sequence-pooled alternative first averages logits and then applies the
+sigmoid,
+\begin{equation}
+    \bar p_\theta(x,y)
+    =
+    \sigma\!\left(
+        \frac{1}{\sum_t m_t}\sum_t m_t w_{\theta,t}
+    \right),
+\end{equation}
+followed by sequence-level binary cross entropy.  In general,
+$\sigma(\operatorname{mean}(w_t))\neq
+\operatorname{mean}(\sigma(w_t))$, so these aggregation orders are not
+interchangeable.
+
+\begin{codeblock}[language=Python,caption={Per-token outcome reward model.}]
+import torch.nn as nn
+import torch.nn.functional as F
+
+class OutcomeRM(nn.Module):
+    def __init__(self, backbone):
+        super().__init__()
+        self.backbone = backbone
+        self.outcome_head = nn.Linear(backbone.config.hidden_size, 1)
+
+    def forward(self, input_ids, attention_mask, labels=None):
+        out = self.backbone(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            output_hidden_states=True,
+            return_dict=True,
+        )
+        hidden = out.hidden_states[-1]
+        logits = self.outcome_head(hidden).squeeze(-1)  # [B, T]
+
+        if labels is None:
+            return {"logits": logits}
+
+        # labels: -100 for prompt/padding; 0 or 1 for completion tokens
+        mask = labels.ne(-100)
+        loss = F.binary_cross_entropy_with_logits(
+            logits[mask], labels[mask].float()
+        )
+        return {"loss": loss, "logits": logits}
+\end{codeblock}
+
+At inference, the per-token probabilities can be reduced to a candidate score
+using the mean, the last few positions, the minimum, or a sum of log
+probabilities.  The reduction must match validation-time behavior; products
+strongly penalize long completions and minimum aggregation is highly sensitive
+to one anomalous token.
+
+\subsection{Process Reward Models}
+
+A process reward model (PRM) evaluates intermediate reasoning steps rather than
+only the final answer.  Let
+$s=(s_1,\ldots,s_K)$ be an annotated reasoning trace and let
+$q_i\in\{0,1\}$ indicate whether step $s_i$ is valid conditioned on the prompt
+and previous steps.  A binary PRM minimizes
+\begin{equation}
+    \mathcal{L}_{\mathrm{PRM}}(\theta)
+    =
+    -\mathbb{E}_{(x,s)\sim\mathcal{D}}
+    \sum_{i=1}^{K}
+    \left[
+        q_i\log r_\theta(s_i\mid x,s_{<i})
+        +(1-q_i)\log\!\left(1-r_\theta(s_i\mid x,s_{<i})\right)
+    \right].
+    \label{eq:prm-loss}
+\end{equation}
+In practice, a separator token marks each step boundary.  All non-boundary
+positions receive the ignore index $-100$.  A common three-class formulation
+uses class indices $0,1,2$ for incorrect, neutral, and correct.
+
+\begin{codeblock}[language=Python,caption={Three-class process reward model.}]
+import torch.nn as nn
+import torch.nn.functional as F
+
+class ProcessRM(nn.Module):
+    def __init__(self, backbone, num_classes=3):
+        super().__init__()
+        self.backbone = backbone
+        self.step_head = nn.Linear(
+            backbone.config.hidden_size, num_classes
+        )
+
+    def forward(self, input_ids, attention_mask, labels=None):
+        out = self.backbone(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            output_hidden_states=True,
+            return_dict=True,
+        )
+        logits = self.step_head(out.hidden_states[-1])  # [B, T, 3]
+
+        if labels is None:
+            return {"logits": logits}
+
+        # labels: 0=incorrect, 1=neutral, 2=correct at boundaries;
+        #         -100 at every other token.
+        loss = F.cross_entropy(
+            logits.reshape(-1, logits.size(-1)),
+            labels.reshape(-1),
+            ignore_index=-100,
+        )
+        return {"loss": loss, "logits": logits}
+\end{codeblock}
+
+For search or reranking, PRM outputs are read only at step boundaries.  Step
+scores can be averaged, summed with position-dependent weights, or reduced by
+the minimum to reject a trace as soon as one step is judged invalid.
+
+\subsection{Reward Models versus Value Functions}
+
+The output shape alone does not define the model.  The supervision target and
+its semantics are decisive:
+
+\begin{center}
+\small
+\begin{tabularx}{\textwidth}{@{}l X X l@{}}
+\toprule
+Model & Prediction & Supervision & Output location \\
+\midrule
+BT RM
+& Relative quality $r_\theta(x,y)$
+& Pairwise preferences
+& EOS/last token \\
+ORM
+& Probability of eventual correctness
+& Fixed offline outcome label
+& Every completion token \\
+PRM
+& Validity of the current reasoning step
+& Step-level annotations
+& Step boundaries \\
+Value function
+& Expected remaining return $V^\pi(s_t)$
+& Return targets from policy rollouts
+& Every policy token \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+A value function predicts
+\begin{equation}
+    V^\pi(s_t)
+    =
+    \mathbb{E}_{\pi}\!\left[
+        \sum_{k=t}^{T}\gamma^{k-t}r_k
+        \,\middle|\,s_t
+    \right].
+\end{equation}
+Its targets generally depend on the current policy's rollouts and change as
+that policy changes.  By contrast, an ORM is normally trained offline against
+fixed correctness labels broadcast to token prefixes.  Even if both use the
+same backbone and scalar per-token head, the ORM estimates outcome
+correctness, whereas the value head estimates remaining return and serves as a
+baseline for advantages such as
+$A_t=\widehat{R}_t-V_\phi(s_t)$.
+
+Training a sequence-level BT model on pairs formed by one correct and one
+incorrect response does \emph{not} turn it into an ORM.  If the objective is
+\eqref{eq:bt-loss} and the output is one scalar per sequence, it remains a
+pairwise preference RM; correctness merely determines how the pairs were
+constructed.
+
+\subsection{Inference Interfaces}
+
+\begin{description}
+    \item[BT RM.]
+    Input $(x,y)$; output one scalar $r_\theta(x,y)$.  Use it as a terminal
+    RL reward or rank $N$ sampled completions by their scalar scores.
+
+    \item[ORM.]
+    Input $(x,y)$; output
+    $p_t\approx P(\text{final answer correct}\mid x,y_{\leq t})$ at completion
+    positions.  Aggregate token scores to verify or rerank finished
+    candidates.
+
+    \item[PRM.]
+    Input $(x,s_1,\ldots,s_K)$; output correctness scores at step boundaries.
+    Aggregate across steps for reranking, or use scores online to prune
+    low-quality search branches.
+
+    \item[Value function.]
+    Input the current prefix state $s_t=(x,y_{<t})$; output $V_\phi(s_t)$.
+    During RL training it provides a per-token baseline rather than an
+    interpretable probability that the whole response is correct.
+\end{description}
