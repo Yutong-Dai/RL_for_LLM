@@ -171,115 +171,75 @@ $\log\prod_t a_t=\sum_t\log a_t$ yields
     \right].
     \label{eq:opd.log-ratio-sum}
 \end{align}
-For any fixed prefix $y_{<t}$, the conditional expectation over the next
-student token is
+For a fixed $x$ and a realized prefix $y_{<t}$, define the corresponding conditional reverse KL by
 \begin{align}
-    &\E_{y_t\sim\pi_\theta(\cdot\mid x,y_{<t})}
-    \left[
-        \log
-        \frac{
-            \pi_\theta(y_t\mid x,y_{<t})
-        }{
-            \pi_{\mathrm{Teacher}}(y_t\mid x,y_{<t})
-        }
-    \right]
-    =
-    \sum_{v\in\Vcal}p_t(v)\log\frac{p_t(v)}{q_t(v)}
-    =
-    D_{\mathrm{KL}}(p_t\|q_t).
+    k_t(x,y_{<t})
+    &\coloneqq
+    \E_{v\sim\pi_\theta(\cdot\mid x,y_{<t})}
+    \left[\log\frac{\pi_\theta(v\mid x,y_{<t})}{\pi_{\mathrm{Teacher}}(v\mid x,y_{<t})}\right]
+    \nonumber\\
+    &=
+    D_{\mathrm{KL}}\!\left(
+        \pi_\theta(\cdot\mid x,y_{<t})
+        \,\middle\|\,
+        \pi_{\mathrm{Teacher}}(\cdot\mid x,y_{<t})
+    \right).
     \label{eq:opd.conditional-token-kl}
 \end{align}
-Let $\Hcal_t(x)$ be the set of length-$(t-1)$ prefixes that have not yet emitted the end-of-sequence token.
-For a prefix $h\in\Hcal_t(x)$, define
-\begin{align*}
-    p_{\theta,h}(v)
-    \coloneqq \pi_\theta(v\mid x,h),
-    \quad\text{and}\quad
-    q_{\mathrm{Teacher},h}(v)
-    \coloneqq \pi_{\mathrm{Teacher}}(v\mid x,h).
-\end{align*}
-Define the per-step log-ratio
-\begin{align*}
-    \ell_t(y)
-    \coloneqq
-    \log
-    \frac{\pi_\theta(y_t\mid x,y_{<t})}
-         {\pi_{\mathrm{Teacher}}(y_t\mid x,y_{<t})}.
-\end{align*}
-Assume that generation is capped at a finite $T_{\max}$, as in practical
-rollouts. Then
-$\mathbf{1}\{T(y)\geq t\}=\mathbf{1}\{y_{<t}\in\Hcal_t(x)\}$:
-step $t$ is active exactly when the preceding prefix has not terminated.
-Because the time sum is finite, expectation and summation may be exchanged.
-Applying the law of iterated expectation after conditioning on the prefix
-therefore gives
+
+Assume that generation is capped at $T_{\max}$. For each $t$, the indicator
+$\mathbf{1}\{t\leq T(y)\}$ is determined by $y_{<t}$ because it only records
+whether an end-of-sequence token has already appeared. Therefore it can be
+pulled through the conditional expectation over the next token. Using the
+tower property term by term gives
 \begin{align}
     &\E_{y\sim\pi_\theta(\cdot\mid x)}
     \left[
         \sum_{t=1}^{T(y)}
-        \ell_t(y)
-    \right]
-    \nonumber\\
-    &\quad=
-    \E_{y\sim\pi_\theta(\cdot\mid x)}
-    \left[
-        \sum_{t=1}^{T_{\max}}
-        \mathbf{1}\{T(y)\geq t\}\ell_t(y)
+        \log\frac{\pi_\theta(y_t\mid x,y_{<t})}{\pi_{\mathrm{Teacher}}(y_t\mid x,y_{<t})}
     \right]
     \nonumber\\
     &\quad=
     \sum_{t=1}^{T_{\max}}
     \E_{y\sim\pi_\theta(\cdot\mid x)}
     \left[
-        \mathbf{1}\{y_{<t}\in\Hcal_t(x)\}\ell_t(y)
+        \mathbf{1}\{t\leq T(y)\}
+        \log\frac{\pi_\theta(y_t\mid x,y_{<t})}{\pi_{\mathrm{Teacher}}(y_t\mid x,y_{<t})}
     \right]
     \nonumber\\
     &\quad=
     \sum_{t=1}^{T_{\max}}
-    \sum_{h\in\Hcal_t(x)}
-    P_\theta(h\mid x)
-    \E_{y_t\sim p_{\theta,h}}
+    \E_{y\sim\pi_\theta(\cdot\mid x)}
     \left[
-        \log\frac{p_{\theta,h}(y_t)}{q_{\mathrm{Teacher},h}(y_t)}
+        \mathbf{1}\{t\leq T(y)\}
+        \E_{v\sim\pi_\theta(\cdot\mid x,y_{<t})}
+        \left[\log\frac{\pi_\theta(v\mid x,y_{<t})}{\pi_{\mathrm{Teacher}}(v\mid x,y_{<t})}\right]
     \right]
     \nonumber\\
     &\quad=
-    \sum_{t=1}^{T_{\max}}
-    \sum_{h\in\Hcal_t(x)}
-    P_\theta(h\mid x)
-    \sum_{v\in\Vcal}
-    p_{\theta,h}(v)
-    \log\frac{p_{\theta,h}(v)}{q_{\mathrm{Teacher},h}(v)}
-    \nonumber\\
-    &\quad=
-    \sum_{t=1}^{T_{\max}}
-    \sum_{h\in\Hcal_t(x)}
-    P_\theta(h\mid x)
-    D_{\mathrm{KL}}\!\left(
-        p_{\theta,h}\,\middle\|\,q_{\mathrm{Teacher},h}
-    \right).
-    \label{eq:opd.prefix-marginalization}
+    \E_{y\sim\pi_\theta(\cdot\mid x)}
+    \left[
+        \sum_{t=1}^{T(y)}
+        k_t(x,y_{<t})
+    \right].
+    \label{eq:opd.tower-decomposition}
 \end{align}
-Here $P_\theta(h\mid x)$ is the probability that the student reaches prefix
-$h$. The restriction $h\in\Hcal_t(x)$ ensures that only steps before
-termination are counted. Sampling one complete student trajectory performs
-exactly this prefix marginalization: each visited prefix is distributed
-according to its corresponding $P_\theta(h\mid x)$. Consequently, after
-restoring the prompt expectation,
+The second equality follows by conditioning each outer expectation on the
+realized prefix $y_{<t}$. Conditional on $x$ and $y_{<t}$, the actual next
+token has distribution
+$y_t\sim\pi_\theta(\cdot\mid x,y_{<t})$. Its conditional mean is therefore
+$\E_{v\sim\pi_\theta(\cdot\mid x,y_{<t})} \left[\log\frac{\pi_\theta(v\mid x,y_{<t})}{\pi_{\mathrm{Teacher}}(v\mid x,y_{<t})}\right]$, where $v$ is only a dummy variable for the next token and the resulting quantity depends only on $y_{<t}$;
+averaging it under the complete-response distribution $y\sim
+\pi_\theta(\cdot\mid x)$ simply averages over the student-induced prefixes.
+The unobserved suffix integrates to one.
+
+Combining \eqref{eq:opd.log-ratio-sum},
+\eqref{eq:opd.conditional-token-kl}, and
+\eqref{eq:opd.tower-decomposition}, then restoring the prompt expectation,
+yields
 \begin{align}
     \Lcal_{\mathrm{OPD}}(\theta)
-    &=
-    \E_{x\sim\Dcal_x}
-    \left[
-        \sum_{t=1}^{T_{\max}}
-        \sum_{h\in\Hcal_t(x)}
-        P_\theta(h\mid x)
-        D_{\mathrm{KL}}\!\left(
-            p_{\theta,h}\,\middle\|\,q_{\mathrm{Teacher},h}
-        \right)
-    \right]
-    \nonumber\\
-    &=
+    =
     \E_{(x,y)\sim\mu_\theta}
     \left[
         \sum_{t=1}^{T(y)}
@@ -291,18 +251,12 @@ restoring the prompt expectation,
     \right].
     \label{eq:opd.token-kl}
 \end{align}
-The second line uses the same joint law
-$\mu_\theta(x,y)=\Dcal_x(x)\pi_\theta(y\mid x)$ defined above. Thus, the
-rollout samples the \emph{prefixes} at which supervision is computed, while
-each $D_{\mathrm{KL}}(p_t\|q_t)$ is an exact full-vocabulary KL at that
-prefix. In practice, implementations often average the token terms rather
-than summing them, and may approximate each full-vocabulary KL using a
-top-$k$ support plus a tail bucket.
 
+In practice, the actual loss computation varies with different implementations on how this exact per-token reverse KL is computed. We will see some examples below.
 
-
-
-\subsection{Vanilla OPD Pseudocode}
+\begin{itemize}
+    \item 
+\end{itemize}
 
 \begin{codeblock}[language=Python]
 def reverse_kl(student_logits, teacher_logits, top_k=None):
