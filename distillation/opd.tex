@@ -255,30 +255,138 @@ yields
 In practice, the actual loss computation varies with different implementations on how this exact per-token reverse KL is computed. We will see some examples below.
 
 \begin{itemize}
-    \item 
+    \item \textbf{Sampled-token OPD.}
+    The lightest variant evaluates the log-ratio only at the token $y_t$
+    sampled by the student. At a realized prefix $(x,y_{<t})$, define
+    \begin{align}
+        \ell_t^{\mathrm{sample}}(x,y_{\leq t})
+        \coloneqq
+        \log p_t(y_t)-\log q_t(y_t).
+        \label{eq:opd.sampled-token-loss}
+    \end{align}
+    Its trajectory-level objective is
+    \begin{align}
+        \Lcal_{\mathrm{OPD}}^{\mathrm{sample}}(\theta)
+        =
+        \E_{(x,y)\sim\mu_\theta}
+        \left[
+            \sum_{t=1}^{T(y)}
+            \ell_t^{\mathrm{sample}}(x,y_{\leq t})
+        \right].
+        \label{eq:opd.sampled-token-objective}
+    \end{align}
+    Since $y_t\sim p_t$ conditional on $(x,y_{<t})$,
+    \begin{align}
+        \E_{y_t\sim p_t}
+        \left[
+            \ell_t^{\mathrm{sample}}(x,y_{\leq t})
+        \right]
+        =
+        \sum_{v\in\Vcal}p_t(v)\log\frac{p_t(v)}{q_t(v)}
+        =
+        D_{\mathrm{KL}}(p_t\|q_t).
+        \label{eq:opd.sampled-token-unbiased}
+    \end{align}
+    Thus, the sampled-token loss is an unbiased one-sample estimator of the
+    scalar token-level reverse KL at the sampled prefix.
+
+    \item \textbf{Full-vocabulary OPD.}
+    This variant evaluates the divergence over the entire vocabulary at every
+    sampled prefix:
+    \begin{align}
+        \Lcal_{\mathrm{OPD}}^{\mathrm{full}}(\theta)
+        =
+        \E_{(x,y)\sim\mu_\theta}
+        \left[
+            \sum_{t=1}^{T(y)}
+            D_{\mathrm{KL}}(p_t\|q_t)
+        \right].
+        \label{eq:opd.full-vocabulary-objective}
+    \end{align}
+    It provides dense supervision but materializing both distributions costs
+    $O(BT_{\max}\Vcal)$ ( where $|\Vcal|$ is the vocabulary size) memory for batch size $B$.
+
+    \item \textbf{Student-top-$k$ OPD.}
+    This intermediate variant restricts the divergence to the $k$ tokens with
+    highest student probability:
+    \begin{align*}
+        S_t(x,y_{<t})
+        \coloneqq
+        \operatorname{TopK}(p_t,k)
+        \subseteq \Vcal.
+    \end{align*}
+    Both distributions are renormalized on this same support:
+    \begin{align}
+        \bar p_t^{(S_t)}(v)
+        &\coloneqq
+        \frac{p_t(v)\mathbf{1}\{v\in S_t\}}
+             {\sum_{u\in S_t}p_t(u)},
+        &
+        \bar q_t^{(S_t)}(v)
+        &\coloneqq
+        \frac{q_t(v)\mathbf{1}\{v\in S_t\}}
+             {\sum_{u\in S_t}q_t(u)}.
+        \label{eq:opd.top-k-renormalization}
+    \end{align}
+    The resulting objective is
+    \begin{align}
+        \Lcal_{\mathrm{OPD}}^{\mathrm{top}\text{-}k}(\theta)
+        =
+        \E_{(x,y)\sim\mu_\theta}
+        \left[
+            \sum_{t=1}^{T(y)}
+            D_{\mathrm{KL}}\!\left(
+                \bar p_t^{(S_t)}
+                \,\middle\|\,
+                \bar q_t^{(S_t)}
+            \right)
+        \right].
+        \label{eq:opd.top-k-objective}
+    \end{align}
+    Probability mass outside $S_t$ is discarded, so this is generally not
+    equal to the full-vocabulary reverse KL. It preserves multi-token
+    supervision on the student's high-probability region at lower cost.
 \end{itemize}
 
 \begin{codeblock}[language=Python]
-def reverse_kl(student_logits, teacher_logits, top_k=None):
-    """Per-position reverse KL, optionally using a top-k plus tail approximation."""
+def opd_token_loss(
+    student_logits,
+    teacher_logits,
+    mode="full",
+    sampled_tokens=None,
+    top_k=None,
+):
+    """Return one OPD loss per batch element and response position."""
     s_logp = student_logits.float().log_softmax(dim=-1)
     with torch.no_grad():
         t_logp = teacher_logits.float().log_softmax(dim=-1)
 
-    if top_k is None:
-        # Exact KL over the full vocabulary at student-sampled states.
+    if mode == "sampled":
+        if sampled_tokens is None:
+            raise ValueError("sampled_tokens is required")
+        token_idx = sampled_tokens.unsqueeze(dim=-1)
+        s_token = s_logp.gather(dim=-1, index=token_idx).squeeze(dim=-1)
+        t_token = t_logp.gather(dim=-1, index=token_idx).squeeze(dim=-1)
+        return s_token - t_token
+
+    if mode == "full":
         return (s_logp.exp() * (s_logp - t_logp)).sum(dim=-1)
 
-    # Keep the student's top-k support and merge all other tokens into one bucket.
-    idx = s_logp.detach().topk(top_k, dim=-1).indices
-    s_top = s_logp.gather(dim=-1, index=idx)
-    t_top = t_logp.gather(dim=-1, index=idx)
-    p_top = s_top.exp()
+    if mode == "topk":
+        if top_k is None:
+            raise ValueError("top_k is required")
 
-    kl = (p_top * (s_top - t_top)).sum(dim=-1)
-    p_tail = (1.0 - p_top.sum(dim=-1)).clamp_min(1e-9)
-    q_tail = (1.0 - t_top.exp().sum(dim=-1)).clamp_min(1e-9)
-    return kl + p_tail * (p_tail.log() - q_tail.log())
+        # Student-selected support S_t.
+        idx = s_logp.detach().topk(top_k, dim=-1).indices
+        s_top = s_logp.gather(dim=-1, index=idx)
+        t_top = t_logp.gather(dim=-1, index=idx)
+
+        # Renormalize student and teacher on the same support.
+        s_bar = s_top - s_top.logsumexp(dim=-1, keepdim=True)
+        t_bar = t_top - t_top.logsumexp(dim=-1, keepdim=True)
+        return (s_bar.exp() * (s_bar - t_bar)).sum(dim=-1)
+
+    raise ValueError(f"unknown OPD mode: {mode}")
 
 
 teacher = load_teacher()  # A model stronger than the student
@@ -290,14 +398,40 @@ for step in range(total_steps):
 
     # The student generates the states on which distillation is performed.
     with torch.no_grad():
-        rollout = student.generate(prompt, max_tokens=max_len)
+        response_tokens = student.generate(prompt, max_tokens=max_len)
 
-    s_logits = student(prompt + rollout).logits
+    trajectory = concatenate(prompt, response_tokens)
+    s_all_logits = student(trajectory).logits
     with torch.no_grad():
-        t_logits = teacher(prompt + rollout).logits
+        t_all_logits = teacher(trajectory).logits
 
-    # Set top_k=None for exact OPD, or top_k=k for the approximation.
-    loss = reverse_kl(s_logits, t_logits, top_k=None).mean()
+    # Select next-token logits aligned with y_1, ..., y_{T(y)} only.
+    s_logits = response_position_logits(s_all_logits, prompt)
+    t_logits = response_position_logits(t_all_logits, prompt)
+
+    # Three alternatives; choose one for a training run.
+    sampled_loss = opd_token_loss(
+        s_logits,
+        t_logits,
+        mode="sampled",
+        sampled_tokens=response_tokens,
+    )
+    full_loss = opd_token_loss(
+        s_logits,
+        t_logits,
+        mode="full",
+    )
+    topk_loss = opd_token_loss(
+        s_logits,
+        t_logits,
+        mode="topk",
+        top_k=64,
+    )
+
+    # Exclude padding after each response's EOS token.
+    active = response_activity_mask(response_tokens)
+    loss = (full_loss * active).sum() / active.sum()
+    # Alternatively, replace full_loss by sampled_loss or topk_loss.
 
     optimizer.zero_grad()
     loss.backward()
