@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# TeX Live's universal biber calls macOS lipo with pre-Xcode-26 syntax.
+# If that fails, extract a single-arch copy and use that instead.
+set -euo pipefail
+
+SYS_BIBER="${SYS_BIBER:-/Library/TeX/texbin/biber}"
+if ! [[ -x "$SYS_BIBER" ]]; then
+  SYS_BIBER="$(command -v biber || true)"
+fi
+if [[ -z "$SYS_BIBER" ]]; then
+  echo "run-biber: could not find a system biber executable" >&2
+  exit 127
+fi
+
+if "$SYS_BIBER" --version >/dev/null 2>&1; then
+  exec "$SYS_BIBER" "$@"
+fi
+
+CACHE_DIR="${HOME}/.cache/texlive-biber-thin"
+CACHE="${CACHE_DIR}/biber"
+mkdir -p "$CACHE_DIR"
+if [[ ! -x "$CACHE" ]] || [[ "$SYS_BIBER" -nt "$CACHE" ]]; then
+  arch="$(uname -m)"
+  lipo "$SYS_BIBER" -thin "$arch" -o "$CACHE"
+  chmod +x "$CACHE"
+fi
+exec "$CACHE" "$@"

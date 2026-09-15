@@ -20,7 +20,7 @@
 \definecolor{anthropicline}{HTML}{EBDCD4}
 % for hyperlinks
 \definecolor{softblue}{RGB}{52,101,164}
-
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 \usepackage{hyperref}
 \hypersetup{
 colorlinks=true,
@@ -29,6 +29,16 @@ citecolor=softblue,
 urlcolor=softblue,
 pdfborder={0 0 0}
 }
+
+% Symbol added after every \href link text
+\usepackage{fontawesome5}
+\newcommand{\extsym}{\,\raisebox{0.8ex}{\scalebox{0.4}{\faExternalLink*}}}
+\begingroup \catcode`\|=6 \catcode`\#=12
+\gdef\href@split|1#|2#|3\\|4{\hyper@@link{|1}{|2}{|4\extsym}\endgroup}
+\endgroup
+
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 \usepackage{geometry}
  \geometry{
  a4paper,

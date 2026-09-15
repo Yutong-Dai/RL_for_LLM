@@ -405,7 +405,7 @@ VeRL has two paths for you to use OPD:
     q_t(v)\coloneqq \pi_{\mathrm{Teacher}}(v\mid x,y_{<t})$.
     Then feed it into the existing \href{https://github.com/verl-project/verl/blob/adc7eefa16dad75c5f7b878823d5a76eac90c7b3/verl/trainer/distillation/losses.py#L280-L288}{PPO policy-loss calculation}.
     
-    \item \textbf{GKD-OPD}: The distillation loss is the target. However, the VeRL implements the teacher-top-k, hence the forward-KL is used when the KL estimation is estimated with the top-k instead of the sampled-token.
+    \item \textbf{GKD-OPD}: The distillation loss is the target. However, the VeRL implements the \citet{agarwal2024policy} so the forward-KL is used, i.e., when using the top-k to do the KL estimation, the teacher-top-k support is used.
 \end{itemize}
 
 
