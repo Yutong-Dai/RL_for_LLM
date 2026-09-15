@@ -4,12 +4,29 @@
 \usepackage{setspace,multicol,listings}             % Text Presets
 \usepackage{algorithm,algpseudocode, algorithmicx}                % Algorithms Presets
 \setlength\parindent{0pt}
+
+\usepackage{xcolor}
+\pagecolor{yellow!2}
+
+\definecolor{UIUClightblue}{HTML}{5783BC} % uiuc Industrial Blue 
+\definecolor{UIUCorange}{HTML}{F5821E} % uiuc heritage orange 
+\newcommand{\orange}[1]{\textcolor{UIUCorange}{#1}}
+\newcommand{\blue}[1]{\textcolor{UIUClightblue}{#1}}
+
+% Anthropic presentation palette (warm terracotta, cream, charcoal)
+\definecolor{anthropicorange}{HTML}{D4785A}
+\definecolor{anthropicpeach}{HTML}{FBF4F0}
+\definecolor{anthropicink}{HTML}{3A332E}
+\definecolor{anthropicline}{HTML}{EBDCD4}
+% for hyperlinks
+\definecolor{softblue}{RGB}{52,101,164}
+
 \usepackage{hyperref}
 \hypersetup{
 colorlinks=true,
-linkcolor=blue,
-citecolor=blue,
-urlcolor=black,
+linkcolor=softblue,
+citecolor=softblue,
+urlcolor=softblue,
 pdfborder={0 0 0}
 }
 \usepackage{geometry}
@@ -18,22 +35,44 @@ pdfborder={0 0 0}
  total={170mm,257mm},
  left=20mm,
  top=20mm,
+ headheight=15pt,
  }
-\newtheorem{theorem}{Theorem}[section]
+\numberwithin{equation}{chapter}
+\newtheorem{theorem}{Theorem}[chapter]
 \newtheorem{lemma}[theorem]{Lemma}
 \newtheorem{corollary}{Corollary}[theorem]
 \theoremstyle{definition}
 \newtheorem{definition}[theorem]{Definition}
-\newtheorem{assumption}{Assumption}[section]
-\newtheorem{example}{Example}[section]
+\newtheorem{assumption}{Assumption}[chapter]
+\newtheorem*{example}{Example}
+\newtheorem*{remark}{Remark}
 \usepackage[yyyymmdd]{datetime}
 \renewcommand{\dateseparator}{--}
 
-\usepackage{xcolor}
-\definecolor{UIUClightblue}{HTML}{5783BC} % uiuc Industrial Blue 
-\definecolor{UIUCorange}{HTML}{F5821E} % uiuc heritage orange 
-\newcommand{\orange}[1]{\textcolor{UIUCorange}{#1}}
-\newcommand{\blue}[1]{\textcolor{UIUClightblue}{#1}}
+
+
+\usepackage[skins,breakable]{tcolorbox}
+\newenvironment{highlight}{}{}
+\tcolorboxenvironment{highlight}{
+  enhanced,
+  breakable,
+  colback=anthropicpeach,
+  colframe=anthropicorange,
+  coltext=anthropicink,
+  boxrule=0pt,
+  leftrule=3.5pt,
+  rightrule=0pt,
+  toprule=0pt,
+  bottomrule=0pt,
+  arc=4pt,
+  left=12pt,
+  right=12pt,
+  top=10pt,
+  bottom=10pt,
+  boxsep=3pt,
+  before skip=10pt,
+  after skip=10pt,
+}
 
 \definecolor{codebg}{HTML}{F6F8FA}
 \definecolor{codeborder}{HTML}{D0D7DE}
@@ -78,6 +117,29 @@ pdfborder={0 0 0}
 
 
 \setlength{\headsep}{15pt}
+
+\def\@makechapterhead#1{%
+  \vspace*{12\p@}%
+  {\parindent \z@ \raggedright \normalfont
+    \ifnum \c@secnumdepth >\m@ne
+      \if@mainmatter
+        \Large\bf\sffamily \@chapapp\space \thechapter
+        \par\nobreak
+        \vskip 8\p@
+      \fi
+    \fi
+    \interlinepenalty\@M
+    \huge\bf\sffamily #1\par\nobreak
+    \vskip 16\p@
+  }}
+\def\@makeschapterhead#1{%
+  \vspace*{12\p@}%
+  {\parindent \z@ \raggedright
+    \normalfont
+    \interlinepenalty\@M
+    \huge\bf\sffamily #1\par\nobreak
+    \vskip 16\p@
+  }}
 
 \def\section{\@startsection {section}{1}{\z@}{-2.0ex plus
     -0.5ex minus -.2ex}{1.5ex plus 0.3ex

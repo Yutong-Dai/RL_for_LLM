@@ -1,4 +1,4 @@
-\documentclass[10pt]{article}
+\documentclass[10pt,oneside]{book}
 \usepackage[T1]{fontenc}
 \usepackage{lmodern}
 \usepackage{yfd,symbols}
@@ -8,10 +8,15 @@
 \pagestyle{fancy}
 \fancyhead{}
 \fancyfoot{}
-\fancyhead[C]{\normalsize\bf\sffamily RL4LLM}
-\fancyhead[L]{\normalsize\bf\sffamily Page: \thepage}
-\fancyhead[R]{\normalsize\bf\sffamily Last Update: \today}
+
+\fancyhead[C]{\normalsize\bf\sffamily Page:~\thepage}
+\fancyhead[R]{\bfseries \rightmark}
+\fancyhead[L]{\bfseries \leftmark}
+\renewcommand{\chaptermark}[1]{\markboth{#1}{}}
+\renewcommand{\sectionmark}[1]{\markright{#1}}
 \renewcommand{\headrulewidth}{1pt}
+\setcounter{secnumdepth}{3}
+\setcounter{tocdepth}{2}
 
 \usepackage[
     backend=biber,
@@ -31,48 +36,51 @@
 
 
 \begin{document}
+\frontmatter
 \hypersetup{linkcolor=black}
+\begin{titlepage}
+\centering
+\vspace*{6cm}
+{\Huge\bf\sffamily Post-Training HandBook\par}
+\vspace{1.5cm}
+{\large\sffamily Last Update: \today\par}
+\vfill
+\end{titlepage}
 \tableofcontents
-\hypersetup{linkcolor=blue}
-\newpage
+\hypersetup{linkcolor=softblue}
 
-\part{Introduction}
+\mainmatter
+\chapter{Introduction}
+\input{basics/background}
+\input{basics/PolicyGradient}
 
-\include{basics/background}
-\include{basics/PolicyGradient}
+\part{Reinforcement Learning}
+\chapter{RL for LLMs}
+\input{rl-llm/PPO}
+\input{rl-llm/REINFORCE++}
+\input{rl-llm/DPO}
+\input{rl-llm/GRPO}
+\input{rl-llm/GSPO}
+\input{rl-llm/CISPO}
+% \input{RLOO}
+% \input{rl-llm/ReMAX}
+\chapter{Agentic RL}
+\input{agentic-rl/preamble}
+\input{agentic-rl/contex-compression}
+\input{agentic-rl/async-rl}
 
+\chapter{Reward Modeling}
+\input{reward-modeling/basics}
 
-\part{Algorithms}
-    
+\chapter{Distillation}
+\input{distillation/preamble}
+\input{distillation/opd}
 
-\include{algortihms/PPO}
-\include{algortihms/REINFORCE++}
-\include{algortihms/DPO}
-\include{algortihms/GRPO}
-\include{algortihms/GSPO}
-\include{algortihms/CISPO}
-% \include{RLOO}
-% \include{ReMAX}
-
-\include{algortihms/contex-compression}
-
-\include{algortihms/part-async-rl}
-
-\include{algortihms/SAO}
-
-\part{Reward Modeling}
-
-\include{reward-modeling/basics}
-
-\part{Distillation}
-
-\include{distillation/opd}
-
-\part{Appendix}
 \appendix
-\include{appendix/glossary}
+\chapter{Appendix}
+\input{appendix/glossary}
 
-\newpage
+\backmatter
 \printbibliography
 \end{document}
 
