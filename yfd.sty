@@ -125,6 +125,25 @@ pdfborder={0 0 0}
     \lstset{style=codeblockstyle,#1}
 }{}
 
+% Inline code, matching the GitHub-style codeblock colors.
+% Usage: \icode{ppo/ray_trainer.py}
+\NewDocumentCommand{\icode}{v}{%
+  \tcbox[on line,
+    box align=base,
+    nobeforeafter,
+    colback=codebg,
+    colframe=codeborder,
+    colupper=codetext,
+    boxrule=0.4pt,
+    arc=2pt,
+    boxsep=1pt,
+    left=3.2pt,
+    right=3.2pt,
+    top=0.6pt,
+    bottom=0.6pt,
+    fontupper=\ttfamily\footnotesize]{\strut#1}%
+}
+
 
 \setlength{\headsep}{15pt}
 
