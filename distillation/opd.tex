@@ -314,7 +314,135 @@ In practice, the actual loss computation varies with different implementations o
     \end{align}
     Probability mass outside $S_t$ is discarded, so this is generally not
     equal to the full-vocabulary reverse KL. It preserves multi-token
-    supervision on the student's high-probability region at lower cost.
+    supervision on the student's high-probability region at lower cost. In other words, the sampled-token OPD is unbiased yet suffers from high variance while the full-vocabulary OPD is unbiased and has lower variance, yet it requires more memory. Top-k OPD is a compromise between the two, it is biased but has lower variance than sampled-token OPD. It also loses the probability mass information outside $S_t$.
+
+    \textbf{When is top-$k$ OPD a good surrogate for full-vocabulary OPD?}
+    Define the mass each distribution places on the student top-$k$ set,
+    $P_{S_t}=\sum_{v\in S_t}p_t(v)$ and $Q_{S_t}=\sum_{v\in S_t}q_t(v)$.
+    Write $S_t^c=\Vcal\setminus S_t$ for the complement, and assume
+    $0<P_{S_t},Q_{S_t}<1$ so that both pieces below are proper distributions.
+    Renormalize on the complement in the same way as
+    \eqref{eq:opd.top-k-renormalization}:
+    \begin{align}
+        p_t^{S_t^c}(v)
+        &\coloneqq
+        \frac{p_t(v)\mathbf{1}\{v\in S_t^c\}}{1-P_{S_t}},
+        &
+        q_t^{S_t^c}(v)
+        &\coloneqq
+        \frac{q_t(v)\mathbf{1}\{v\in S_t^c\}}{1-Q_{S_t}}.
+        \label{eq:opd.complement-renormalization}
+    \end{align}
+    Partition the reverse KL into the top-$k$ support and its complement:
+    \begin{align}
+        D_{\mathrm{KL}}(p_t\|q_t)
+        &=
+        \sum_{v\in\Vcal}p_t(v)\log\frac{p_t(v)}{q_t(v)}
+        \nonumber\\
+        &=
+        \sum_{v\in S_t}p_t(v)\log\frac{p_t(v)}{q_t(v)}
+        +
+        \sum_{v\in S_t^c}p_t(v)\log\frac{p_t(v)}{q_t(v)}.
+        \label{eq:opd.kl-split}
+    \end{align}
+    On $S_t$, the renormalization
+    \eqref{eq:opd.top-k-renormalization} says
+    $p_t(v)=P_{S_t}\bar p_t^{(S_t)}(v)$ and
+    $q_t(v)=Q_{S_t}\bar q_t^{(S_t)}(v)$. Substituting and using
+    $\sum_{v\in S_t}\bar p_t^{(S_t)}(v)=1$ separates the shape of the
+    conditional distribution from the mass on the set:
+    \begin{align}
+        \sum_{v\in S_t}p_t(v)\log\frac{p_t(v)}{q_t(v)}
+        &=
+        \sum_{v\in S_t}
+        P_{S_t}\bar p_t^{(S_t)}(v)
+        \log\frac{P_{S_t}\bar p_t^{(S_t)}(v)}{Q_{S_t}\bar q_t^{(S_t)}(v)}
+        \nonumber\\
+        &=
+        P_{S_t}
+        \sum_{v\in S_t}
+        \bar p_t^{(S_t)}(v)
+        \left(
+            \log\frac{\bar p_t^{(S_t)}(v)}{\bar q_t^{(S_t)}(v)}
+            +
+            \log\frac{P_{S_t}}{Q_{S_t}}
+        \right)
+        \nonumber\\
+        &=
+        P_{S_t}\,
+        D_{\mathrm{KL}}\!\left(
+            \bar p_t^{(S_t)}
+            \,\middle\|\,
+            \bar q_t^{(S_t)}
+        \right)
+        +
+        P_{S_t}\log\frac{P_{S_t}}{Q_{S_t}}.
+        \label{eq:opd.kl-on-support}
+    \end{align}
+    The same substitution on the complement,
+    $p_t(v)=(1-P_{S_t})p_t^{S_t^c}(v)$ and
+    $q_t(v)=(1-Q_{S_t})q_t^{S_t^c}(v)$, gives
+    \begin{align}
+        \sum_{v\in S_t^c}p_t(v)\log\frac{p_t(v)}{q_t(v)}
+        &=
+        (1-P_{S_t})\,
+        D_{\mathrm{KL}}\!\left(
+            p_t^{S_t^c}
+            \,\middle\|\,
+            q_t^{S_t^c}
+        \right)
+        +
+        (1-P_{S_t})\log\frac{1-P_{S_t}}{1-Q_{S_t}}.
+        \label{eq:opd.kl-on-complement}
+    \end{align}
+    The two scalar terms are the KL between Bernoulli random variables that
+    only record whether the next token falls in $S_t$. If
+    $Z\sim\mathrm{Bern}(P_{S_t})$ and $W\sim\mathrm{Bern}(Q_{S_t})$, then
+    \begin{align}
+        D_{\mathrm{KL}}(Z\|W)
+        &=
+        P_{S_t}\log\frac{P_{S_t}}{Q_{S_t}}
+        +
+        (1-P_{S_t})\log\frac{1-P_{S_t}}{1-Q_{S_t}}.
+        \label{eq:opd.bernoulli-kl}
+    \end{align}
+    Adding \eqref{eq:opd.kl-on-support} and \eqref{eq:opd.kl-on-complement},
+    and identifying \eqref{eq:opd.bernoulli-kl}, produces the decomposition
+    \begin{align}
+        D_{\mathrm{KL}}(p_t\|q_t)
+        &=
+        P_{S_t}\,
+        D_{\mathrm{KL}}\!\left(
+            \bar p_t^{(S_t)}
+            \,\middle\|\,
+            \bar q_t^{(S_t)}
+        \right)
+        +
+        (1-P_{S_t})\,
+        D_{\mathrm{KL}}\!\left(
+            p_t^{S_t^c}
+            \,\middle\|\,
+            q_t^{S_t^c}
+        \right)
+        \nonumber\\
+        &\quad+
+        D_{\mathrm{KL}}\!\left(
+            \mathrm{Bern}(P_{S_t})
+            \,\middle\|\,
+            \mathrm{Bern}(Q_{S_t})
+        \right).
+        \label{eq:opd.kl-decomposition}
+    \end{align}
+    Top-$k$ OPD keeps only the renormalized divergence on $S_t$, and it
+    drops the weight $P_{S_t}$. The other two terms are the bias. The
+    complement term vanishes as $P_{S_t}\to 1$, which is the regime in which
+    the student's top-$k$ set already carries essentially all of its mass.
+    The Bernoulli term is small when $P_{S_t}\approx Q_{S_t}$, i.e., when
+    the teacher places a similar fraction of its mass on that same set. In
+    that regime $P_{S_t}\approx 1$ as well, so dropping the weight changes
+    the objective by little. Outside it, top-$k$ OPD ignores both how the
+    leftover mass is shaped and how much total mass each model assigns to
+    $S_t$.
 \end{itemize}
 
 \begin{codeblock}[language=Python]
