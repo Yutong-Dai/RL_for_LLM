@@ -1268,7 +1268,7 @@ of the quantities defined in Section~\ref{sec:opd.rethinking-method}.
     \href{https://github.com/Thinking-Space/Rethinking-OPD/blob/ac26e38d6f1572eb027597b48a9f4e01f6915ef8/verl/verl/trainer/ppo/ray_trainer.py#L1051}
     {Generates the on-policy responses} via
     \newline
-    \icode{old_log_probs, entropys, topk_ids, topk_log_probs = self.actor_rollout_wg.generate_sequences(gen_batch)}.
+    \icode{gen_batch_output = self.actor_rollout_wg.generate_sequences(gen_batch_output)}.
 
     Here, \icode{generate_sequences} produces the sampled student responses
     $y \sim \pi_\theta(\cdot\mid x)$ using the inference backend, e.g., vLLM or SGLang.
@@ -1351,21 +1351,21 @@ topk_ids = full_topk_ids[:, -response_length - 1 : -1, :]
 topk_log_probs = full_topk_log_probs[:, -response_length - 1 : -1, :]
     \end{codeblock}
 
-    Therefore, for each student-visited state $s_t=(x,y_{<t})$,
+    Therefore, for each student-visited prefix $(x,y_{<t})$,
     \[
         \texttt{student\_top\_k\_ids}
         =
         S_t
         =
         \operatorname{TopK}\!\left(
-            \pi_\theta(\cdot\mid s_t)
+            \pi_\theta(\cdot\mid x,y_{<t})
         \right),
     \]
     and
     \[
         \texttt{student\_top\_k\_log\_probs}[i]
         =
-        \log \pi_\theta(i\mid s_t) \equiv \log p_t(i)
+        \log \pi_\theta(i\mid x,y_{<t}) \equiv \log p_t(i)
         \qquad i\in S_t.
     \]
 
@@ -1414,9 +1414,9 @@ flat_on_student_log_probs, flat_counts, flat_overlap_mask,
     self._compute_teacher_top_k_log_probs(
     logits=flat_logits, student_ids=flat_ids, top_k=top_k, strategy=strategy)
 
-# ... omit operations to get the tensors' shapess right
+# ... omit operations to get the tensors' shapes right
     \end{codeblock}
-    At this point, the last piece is on the mechanics of \href{https://github.com/Thinking-Space/Rethinking-OPD/blob/ac26e38d6f1572eb027597b48a9f4e01f6915ef8/verl/verl/workers/actor/dp_actor.py#L1110}{\texttt{\_compute\_teacher\_top\_k\_log\_probs}}. It offers 5 options for selecting the top-k token sets:
+    At this point, the last piece is on the mechanics of \href{https://github.com/Thinking-Space/Rethinking-OPD/blob/ac26e38d6f1572eb027597b48a9f4e01f6915ef8/verl/verl/workers/fsdp_workers.py#L1830}{\texttt{\_compute\_teacher\_top\_k\_log\_probs}}. It offers 5 options for selecting the top-k token sets:
     \begin{itemize}
         \item \texttt{only\_stu}: select top-k tokens from the student, then query the teacher for corresponding log-probs
         \item \texttt{only\_tch}: select top-k tokens from the teacher, then query the student for corresponding log-probs
@@ -1432,7 +1432,7 @@ flat_on_student_log_probs, flat_counts, flat_overlap_mask,
 # student_ids: (n_samples, K_s)
 # output: (n_samples, K_s)
 
-# use chucked top_k to save the memory
+# use chunked top_k to save the memory
 for start in range(0, n_samples, chunk_size):
     end = min(start + chunk_size, n_samples)
     logits_chunk = logits[start:end] # (chunk, Vocab)
@@ -1451,11 +1451,20 @@ for start in range(0, n_samples, chunk_size):
     
 
     \end{codeblock}
+    The gathered values are returned as \texttt{teacher\_on\_student\_log\_probs}, so for
+    \texttt{only\_stu},
+    \[
+        \texttt{teacher\_on\_student\_log\_probs}[i]
+        =
+        \log \pi_{\mathrm{Teacher}}(i\mid x,y_{<t}) \equiv \log q_t(i)
+        \qquad i\in S_t,
+    \]
+    with the teacher logits divided by \texttt{teacher\_temperature}.
 
     \item Once the student and teacher top-k log-probabilities are computed, the next step is to compute the reward. This is done by \href{https://github.com/Thinking-Space/Rethinking-OPD/blob/ac26e38d6f1572eb027597b48a9f4e01f6915ef8/verl/verl/trainer/ppo/ray_trainer.py#L1143}{\texttt{compute\_distillation\_reward}} 
     \newline
     \icode{distillation_output = self.actor_rollout_wg.compute_distillation_reward(batch)}, which calls
-    \href{https://github.com/Thinking-Space/Rethinking-OPD/blob/ac26e38d6f1572eb027597b48a9f4e01f6915ef8/verl/verl/workers/actor/dp_actor.py#L451}{DataParallelPPOActor.compute\_distillation\_reward}. It also support the above 5 strategies. We use the default strategy \texttt{only\_stu} to demonstrate the computation.
+    \href{https://github.com/Thinking-Space/Rethinking-OPD/blob/ac26e38d6f1572eb027597b48a9f4e01f6915ef8/verl/verl/workers/actor/dp_actor.py#L451}{DataParallelPPOActor.compute\_distillation\_reward}. It also supports the above 5 strategies. We use the default strategy \texttt{only\_stu} to demonstrate the computation.
     \begin{codeblock}[language=Python]
 S_logp = student_top_k_log_probs # (n_samples, top_k)
 T_logp = teacher_top_k_log_probs # (n_samples, top_k)
@@ -1473,11 +1482,14 @@ rm_scores = -kl_val * norm_weights
     \[
         \texttt{norm\_weights}_i
         =
-        \frac{\pi_\theta(i\mid s_t)}
-        {\sum_{j\in S_t}\pi_\theta(j\mid s_t)}
+        \frac{\pi_\theta(i\mid x,y_{<t})}
+        {\sum_{j\in S_t}\pi_\theta(j\mid x,y_{<t})}
         \equiv \bar{p}_t^{(S_t)}(i)  \text{ for } i\in S_t
     \]
-    and \texttt{kl\_val} is $\delta_t(i)$. The produced candidate-level reward is
+    under the default \texttt{reward\_weight\_mode="student\_p"} (the alternatives
+    \texttt{"teacher\_p"} and \texttt{"none"} use teacher or uniform weights, and the analysis of
+    Section~\ref{sec:opd.rethinking-method} does not apply to them), and \texttt{kl\_val} is
+    $\delta_t(i)$. The produced candidate-level reward is
     \begin{align}
         r_{t,i}
         =
@@ -1497,7 +1509,7 @@ rm_scores = -kl_val * norm_weights
     option (used by the \texttt{union-intersection} strategy), which uses the weights $p_t(i)$
     instead of $\bar p_t^{(S_t)}(i)$; the factor $1/P_{S_t}$ in
     \eqref{eq:opd.rethinking-potential} then disappears and the gradient is exactly
-    $\nabla_\theta\Phi_t$.
+    $\nabla_\theta\Phi_t$, with $S_t$ replaced by that strategy's candidate set.
     % At entry to this function, the provenance of its important inputs is
     % therefore
     % \begin{codeblock}[language=Python]
@@ -1511,12 +1523,12 @@ rm_scores = -kl_val * norm_weights
 
     % Thus,
     % \[
-    %     \texttt{S\_logp}_i=\log\pi_\theta(i\mid s_t),
+    %     \texttt{S\_logp}_i=\log\pi_\theta(i\mid x,y_{<t}),
     %     \qquad
-    %     \texttt{T\_on\_S}_i=\log\pi_T(i\mid s_t).
+    %     \texttt{T\_on\_S}_i=\log\pi_T(i\mid x,y_{<t}).
     % \]
 
-    \item One the reward is computed, the next step is to compute the advantage. This is done by \href{https://github.com/Thinking-Space/Rethinking-OPD/blob/ac26e38d6f1572eb027597b48a9f4e01f6915ef8/verl/verl/trainer/ppo/ray_trainer.py#L1380}{\texttt{compute\_advantage}}, which ultimately calls \href{https://github.com/Thinking-Space/Rethinking-OPD/blob/ac26e38d6f1572eb027597b48a9f4e01f6915ef8/verl/verl/trainer/ppo/core_algos.py#L884}{\texttt{compute\_token\_reward\_direct\_advantage}}
+    \item Once the reward is computed, the next step is to compute the advantage. This is done by \href{https://github.com/Thinking-Space/Rethinking-OPD/blob/ac26e38d6f1572eb027597b48a9f4e01f6915ef8/verl/verl/trainer/ppo/ray_trainer.py#L1380}{\texttt{compute\_advantage}}, which ultimately calls \href{https://github.com/Thinking-Space/Rethinking-OPD/blob/ac26e38d6f1572eb027597b48a9f4e01f6915ef8/verl/verl/trainer/ppo/core_algos.py#L884}{\texttt{compute\_token\_reward\_direct\_advantage}}
 \begin{codeblock}[language=Python]
 advantage = compute_advantage(
     batch, # where you get the reward from
@@ -1541,7 +1553,7 @@ advantage = rm_scores * response_mask
         \label{eq:opd.rethinking-advantage}
     \end{align}
     On response positions this is exactly \eqref{eq:opd.rethinking-cand-advantage}.
-    \item Lastly, the code reached to \href{https://github.com/Thinking-Space/Rethinking-OPD/blob/ac26e38d6f1572eb027597b48a9f4e01f6915ef8/verl/verl/trainer/ppo/ray_trainer.py#L2259}{\texttt{self.actor\_rollout\_wg.update\_actor}}, which is the entrypoint of the PPO update. If the FSDP backend is used, then the update done by \href{https://github.com/Thinking-Space/Rethinking-OPD/blob/ac26e38d6f1572eb027597b48a9f4e01f6915ef8/verl/verl/workers/fsdp_workers.py#L880}{self.actor.update\_policy}.
+    \item Lastly, the code reaches \href{https://github.com/Thinking-Space/Rethinking-OPD/blob/ac26e38d6f1572eb027597b48a9f4e01f6915ef8/verl/verl/trainer/ppo/ray_trainer.py#L2259}{\texttt{self.actor\_rollout\_wg.update\_actor}}, which is the entrypoint of the PPO update. If the FSDP backend is used, then the update is done by \href{https://github.com/Thinking-Space/Rethinking-OPD/blob/ac26e38d6f1572eb027597b48a9f4e01f6915ef8/verl/verl/workers/fsdp_workers.py#L880}{self.actor.update\_policy}.
     With a 3D advantage, the actor recomputes $\log p_t(i)$ for the stored candidate
     ids, \icode{log_prob_for_loss = topk_log_probs}, and the
     \href{https://github.com/Thinking-Space/Rethinking-OPD/blob/ac26e38d6f1572eb027597b48a9f4e01f6915ef8/verl/verl/trainer/ppo/core_algos.py#L1118}{PPO loss}
