@@ -140,7 +140,7 @@ $\log\prod_t a_t=\sum_t\log a_t$ yields
 \end{align}
 For a fixed $x$ and a realized prefix $y_{<t}$, define the corresponding conditional reverse KL by
 \begin{align}
-    k_t(x,y_{<t})
+    \mathrm{kl}_t(x,y_{<t})
     &\coloneqq
     \E_{v\sim\pi_\theta(\cdot\mid x,y_{<t})}
     \left[\log\frac{\pi_\theta(v\mid x,y_{<t})}{\pi_{\mathrm{Teacher}}(v\mid x,y_{<t})}\right]
@@ -187,7 +187,7 @@ tower property term by term gives
     \E_{y\sim\pi_\theta(\cdot\mid x)}
     \left[
         \sum_{t=1}^{T(y)}
-        k_t(x,y_{<t})
+        \mathrm{kl}_t(x,y_{<t})
     \right].
     \label{eq:opd.tower-decomposition}
 \end{align}
@@ -219,6 +219,7 @@ yields
     \label{eq:opd.token-kl}
 \end{align}
 
+\subsection{Implemnted OPD Objectives}
 In practice, the actual loss computation varies with different implementations on how this exact per-token reverse KL is computed. We will see some examples below.
 
 \begin{itemize}
@@ -262,16 +263,18 @@ In practice, the actual loss computation varies with different implementations o
     \item \textbf{Full-vocabulary OPD.}
     This variant evaluates the divergence over the entire vocabulary at every
     sampled prefix:
-    \begin{align}
-        \Lcal_{\mathrm{OPD}}^{\mathrm{full}}(\theta)
-        =
-        \E_{(x,y)\sim\mu_\theta}
-        \left[
-            \sum_{t=1}^{T(y)}
-            D_{\mathrm{KL}}(p_t\|q_t)
-        \right].
-        \label{eq:opd.full-vocabulary-objective}
-    \end{align}
+    \begin{highlight}
+        \begin{align}
+            \Lcal_{\mathrm{OPD}}^{\mathrm{full}}(\theta)
+            =
+            \E_{(x,y)\sim\mu_\theta}
+            \left[
+                \sum_{t=1}^{T(y)}
+                D_{\mathrm{KL}}(p_t\|q_t)
+            \right].
+            \label{eq:opd.full-vocabulary-objective}
+        \end{align}
+    \end{highlight}
     It provides dense supervision but materializing both distributions costs
     $O(BT_{\max}\Vcal)$ ( where $|\Vcal|$ is the vocabulary size) memory for batch size $B$.
 
@@ -298,22 +301,26 @@ In practice, the actual loss computation varies with different implementations o
         \label{eq:opd.top-k-renormalization}
     \end{align}
     The resulting objective is
-    \begin{align}
-        \Lcal_{\mathrm{OPD}}^{\mathrm{top}\text{-}k}(\theta)
-        =
-        \E_{(x,y)\sim\mu_\theta}
-        \left[
-            \sum_{t=1}^{T(y)}
-            D_{\mathrm{KL}}\!\left(
-                \bar p_t^{(S_t)}
-                \,\middle\|\,
-                \bar q_t^{(S_t)}
-            \right)
-        \right].
-        \label{eq:opd.top-k-objective}
-    \end{align}
+    \begin{highlight}
+        \begin{align}
+            \Lcal_{\mathrm{OPD}}^{\mathrm{top}\text{-}k}(\theta)
+            =
+            \E_{(x,y)\sim\mu_\theta}
+            \left[
+                \sum_{t=1}^{T(y)}
+                D_{\mathrm{KL}}\!\left(
+                    \bar p_t^{(S_t)}
+                    \,\middle\|\,
+                    \bar q_t^{(S_t)}
+                \right)
+            \right].
+            \label{eq:opd.top-k-objective}
+        \end{align}
+    \end{highlight}
 
     \begin{remark}
+        \item
+        \begin{itemize}
         \item Probability mass outside $S_t$ is discarded, so this is generally not
         equal to the full-vocabulary reverse KL. It preserves multi-token
         supervision on the student's high-probability region at lower cost. In other words, the sampled-token OPD is unbiased yet suffers from high variance while the full-vocabulary OPD is unbiased and has lower variance, yet it requires more memory. Top-k OPD is a compromise between the two, it is biased but has lower variance than sampled-token OPD. It also loses the probability mass information outside $S_t$.
@@ -447,11 +454,246 @@ In practice, the actual loss computation varies with different implementations o
         the objective by little. Outside it, top-$k$ OPD ignores both how the
         leftover mass is shaped and how much total mass each model assigns to
         $S_t$.
+        \end{itemize}
     \end{remark}
-
-
-
 \end{itemize}
+
+\subsection{Gradients of the OPD Objective}
+\label{sec:opd.gradients}
+
+The three variants above describe what is \emph{computed}; this section describes what
+is \emph{differentiated}. We first derive the exact gradient of
+\eqref{eq:opd.token-kl}, then show that standard OPD keeps only part of it, and finally
+check, variant by variant, whether plain backpropagation produces that part.
+
+Throughout, the teacher is fixed, so $\nabla_\theta q_t=0$. We use one identity
+repeatedly: for any probability $\pi_\theta(z)>0$ that is differentiable in $\theta$,
+the chain rule gives
+\begin{align}
+    \pi_\theta(z)\,\nabla_\theta\log\pi_\theta(z)
+    =
+    \pi_\theta(z)\,\frac{\nabla_\theta\pi_\theta(z)}{\pi_\theta(z)}
+    =
+    \nabla_\theta\pi_\theta(z).
+    \label{eq:opd.log-derivative}
+\end{align}
+We also use the stop-gradient operator $\operatorname{sg}[\cdot]$ (\texttt{.detach()} in code), with
+the following convention. $\operatorname{sg}$ appears only inside an expression that is still to
+be differentiated, i.e., a loss, a surrogate, or an advantage that enters a loss, where it marks a
+factor that is treated as a constant under $\nabla_\theta$. An expression that already contains
+$\nabla_\theta$ never carries $\operatorname{sg}$: every factor outside $\nabla_\theta$ is simply a
+value at the current $\theta$.
+
+\paragraph{The exact gradient.}
+In \eqref{eq:opd.token-kl}, $\theta$ enters in two places: inside each per-state KL loss
+$\mathrm{kl}_t(x,y_{<t})$ defined in \eqref{eq:opd.conditional-token-kl}, through $\pi_\theta(\cdot\mid x,y_{<t})$, and through $\mu_\theta$, which determines which prefixes $y_{<t}$ are visited. The prompt
+distribution $\Dcal_x$ does not depend on $\theta$, so fix $x$ and differentiate
+\begin{align*}
+    J_x(\theta)
+    & \coloneqq
+    \E_{y\sim\pi_\theta(\cdot\mid x)}
+    \left[
+        \sum_{t=1}^{T(y)}
+    D_{\mathrm{KL}}\!\left(
+        \pi_\theta(\cdot\mid x,y_{<t})
+        \,\middle\|\,
+        \pi_{\mathrm{Teacher}}(\cdot\mid x,y_{<t})\right)
+    \right].
+    \nonumber\\
+    & =
+    \E_{y\sim\pi_\theta(\cdot\mid x)}
+    \left[
+        \sum_{t=1}^{T(y)}\mathrm{kl}_t(x,y_{<t})
+    \right].
+\end{align*}
+\begin{enumerate}
+    \item \emph{Reduce each term to a sum over prefixes.} As in the derivation of
+    \eqref{eq:opd.tower-decomposition}, cap generation at $T_{\max}$ and use the indicator
+    $\mathbf{1}\{t\leq T(y)\}$, which is determined by $y_{<t}$. The $t$-th summand then
+    depends on $y$ only through $y_{<t}$, so its expectation only needs the marginal
+    probability of the prefix,
+    $\pi_\theta(y_{<t}\mid x)=\prod_{s=1}^{t-1}p_s(y_s)$:
+    \begin{align*}
+        J_x(\theta)
+        =
+        \sum_{t=1}^{T_{\max}}
+        \sum_{y_{<t}}
+        \pi_\theta(y_{<t}\mid x)\,
+        \mathbf{1}\{t\leq T(y)\}\,
+        \mathrm{kl}_t(x,y_{<t}).
+    \end{align*}
+    \item \emph{Product rule.} Every sum is finite, so the gradient passes inside. Each
+    summand is a product of two $\theta$-dependent factors, $\pi_\theta(y_{<t}\mid x)$ and
+    $\mathrm{kl}_t(x,y_{<t})$; the indicator does not depend on $\theta$. Applying the
+    product rule, then \eqref{eq:opd.log-derivative} to $\nabla_\theta\pi_\theta(y_{<t}\mid x)$,
+    \begin{align*}
+        \nabla_\theta J_x(\theta)
+        &=
+        \sum_{t=1}^{T_{\max}}
+        \sum_{y_{<t}}
+        \mathbf{1}\{t\leq T(y)\}
+        \left[
+            \pi_\theta(y_{<t}\mid x)\,\nabla_\theta\mathrm{kl}_t(x,y_{<t})
+            +
+            \mathrm{kl}_t(x,y_{<t})\,\nabla_\theta\pi_\theta(y_{<t}\mid x)
+        \right]
+        \\
+        &=
+        \sum_{t=1}^{T_{\max}}
+        \sum_{y_{<t}}
+        \pi_\theta(y_{<t}\mid x)\,
+        \mathbf{1}\{t\leq T(y)\}
+        \left[
+            \nabla_\theta\mathrm{kl}_t(x,y_{<t})
+            +
+            \mathrm{kl}_t(x,y_{<t})\,\nabla_\theta\log\pi_\theta(y_{<t}\mid x)
+        \right].
+    \end{align*}
+    Undoing step 1 (the bracket still depends on $y$ only through $y_{<t}$) turns this
+    back into an expectation over complete responses:
+    \begin{align*}
+        \nabla_\theta J_x(\theta)
+        =
+        \E_{y\sim\pi_\theta(\cdot\mid x)}
+        \left[
+            \sum_{t=1}^{T(y)}\nabla_\theta\mathrm{kl}_t(x,y_{<t})
+        \right]
+        +
+        \E_{y\sim\pi_\theta(\cdot\mid x)}
+        \left[
+            \sum_{t=1}^{T(y)}\mathrm{kl}_t(x,y_{<t})\,\nabla_\theta\log\pi_\theta(y_{<t}\mid x)
+        \right].
+    \end{align*}
+    \item \emph{Expand the prefix score.} Taking the log of
+    $\pi_\theta(y_{<t}\mid x)=\prod_{s=1}^{t-1}p_s(y_s)$ gives
+    $\nabla_\theta\log\pi_\theta(y_{<t}\mid x)=\sum_{s=1}^{t-1}\nabla_\theta\log p_s(y_s)$.
+    The second expectation therefore contains the double sum
+    \begin{align*}
+        \sum_{t=1}^{T(y)}\sum_{s=1}^{t-1}
+        \mathrm{kl}_t(x,y_{<t})\,\nabla_\theta\log p_s(y_s).
+    \end{align*}
+    \item \emph{Swap the order of summation.} The double sum runs over all pairs
+    $1\leq s<t\leq T(y)$. Summing over $s$ on the outside instead,
+    \begin{align*}
+        \sum_{t=1}^{T(y)}\sum_{s=1}^{t-1}
+        \mathrm{kl}_t(x,y_{<t})\,\nabla_\theta\log p_s(y_s)
+        =
+        \sum_{s=1}^{T(y)}
+        \nabla_\theta\log p_s(y_s)
+        \sum_{t=s+1}^{T(y)}\mathrm{kl}_t(x,y_{<t}).
+    \end{align*}
+    Renaming $s\to t$ and $t\to t'$ and restoring the expectation over $x\sim\Dcal_x$ gives
+    \begin{align}
+        \nabla_\theta\Lcal_{\mathrm{OPD}}(\theta)
+        =
+        \underbrace{
+        \E_{(x,y)\sim\mu_\theta}
+        \left[
+            \sum_{t=1}^{T(y)}\nabla_\theta \mathrm{kl}_t(x,y_{<t})
+        \right]
+        }_{\text{(A): current state}}
+        +
+        \underbrace{
+        \E_{(x,y)\sim\mu_\theta}
+        \left[
+            \sum_{t=1}^{T(y)}\nabla_\theta\log p_t(y_t)
+            \sum_{t'=t+1}^{T(y)}\mathrm{kl}_{t'}(x,y_{<t'})
+        \right]
+        }_{\text{(B): future states}}.
+        \label{eq:opd.exact-gradient}
+    \end{align}
+\end{enumerate}
+Term (A) changes $\pi_\theta(\cdot\mid x,y_{<t})$ to reduce the KL at the state already visited. Term (B) is a
+REINFORCE term whose ``reward'' for token $y_t$ is the total KL at all later positions:
+$y_t$ determines which future states are visited, so it is credited with their KL. Note
+that $\mathrm{kl}_t$ itself does not appear in the reward of $y_t$, because
+$\mathrm{kl}_t(x,y_{<t})$ does not depend on $y_t$.
+
+\paragraph{What standard OPD keeps.}
+Standard OPD drops term (B): each visited state $(x,y_{<t})$ is treated as a constant
+and only term (A) is kept. In reinforcement-learning terms, this corresponds to a
+discount factor of zero. The three variants differ only in how they compute (or
+estimate) $\nabla_\theta\mathrm{kl}_t(x,y_{<t})$, or its top-$k$ analogue, at a fixed state.
+Below, write $\delta_t(v)\coloneqq\log p_t(v)-\log q_t(v)$, so that
+$\mathrm{kl}_t(x,y_{<t})=\sum_{v\in\Vcal}p_t(v)\,\delta_t(v)$.
+
+\paragraph{Full-vocabulary and top-$k$ OPD: plain backpropagation is correct.}
+The full-vocabulary variant computes $\mathrm{kl}_t(x,y_{<t})=\sum_{v\in\Vcal}p_t(v)\,\delta_t(v)$
+exactly. The top-$k$ variant computes
+$D_{\mathrm{KL}}(\bar p_t^{(S_t)}\|\bar q_t^{(S_t)})$; the renormalized log-probabilities
+are obtained by subtracting a log-sum-exp,
+$\log p_t(i)-\log\sum_{j\in S_t}p_t(j)=\log\bar p_t^{(S_t)}(i)$ by
+\eqref{eq:opd.top-k-renormalization}, and likewise for the teacher. The index set $S_t$
+is chosen from detached log-probabilities, so it is held fixed; this is correct
+because $S_t$ is piecewise constant in $\theta$. In both variants the value is a
+deterministic, differentiable function of $\theta$ at a fixed state, with no sampling
+inside, so autograd returns its exact gradient. For the top-$k$ variant this is the
+exact gradient of the top-$k$ objective, which is itself a biased stand-in for
+$\mathrm{kl}_t$ (see the remark after \eqref{eq:opd.top-k-objective}).
+
+\paragraph{Sampled-token OPD: plain backpropagation is wrong.}
+Here the computed value $\ell_t^{\mathrm{sample}}=\delta_t(y_t)$ depends on the token
+$y_t\sim p_t$, which is drawn from the distribution being trained. Its expectation is
+the target, $\E_{y_t\sim p_t}[\delta_t(y_t)]=\mathrm{kl}_t(x,y_{<t})$ by
+\eqref{eq:opd.sampled-token-unbiased}, but autograd cannot differentiate through the
+sampling step. The argument is a one-step version of the derivation above.
+\begin{enumerate}
+    \item \emph{What autograd computes.} Since $\nabla_\theta q_t=0$, backpropagating
+    $\ell_t^{\mathrm{sample}}$ gives $\nabla_\theta\delta_t(y_t)=\nabla_\theta\log p_t(y_t)$.
+    The teacher does not appear.
+    \item \emph{Its expectation is zero.} Because $\Vcal$ is finite, the expectation is
+    a finite sum, so
+    \begin{align}
+        \E_{y_t\sim p_t}\!\left[\nabla_\theta\log p_t(y_t)\right]
+        =
+        \sum_{v\in\Vcal}p_t(v)\,\nabla_\theta\log p_t(v)
+        \overset{\eqref{eq:opd.log-derivative}}{=}
+        \sum_{v\in\Vcal}\nabla_\theta p_t(v)
+        =
+        \nabla_\theta\sum_{v\in\Vcal}p_t(v)
+        =
+        \nabla_\theta 1
+        =
+        0 
+        \label{eq:opd.sampled-token-gradient-expectation}
+    \end{align}
+    So the update is zero-mean noise that carries no information from the teacher.
+    \item \emph{The true gradient.} Applying the product rule inside the finite sum,
+    \begin{align*}
+        \nabla_\theta\mathrm{kl}_t(x,y_{<t})
+        &=
+        \nabla_\theta\sum_{v\in\Vcal}p_t(v)\,\delta_t(v)
+        =
+        \sum_{v\in\Vcal}\nabla_\theta p_t(v)\,\delta_t(v)
+        +
+        \sum_{v\in\Vcal}p_t(v)\,\nabla_\theta\delta_t(v)
+        \\
+        &\overset{\eqref{eq:opd.log-derivative}}{=}
+        \underbrace{\sum_{v\in\Vcal}p_t(v)\,\delta_t(v)\,\nabla_\theta\log p_t(v)}_{\E_{y_t\sim p_t}[\delta_t(y_t)\nabla_\theta\log p_t(y_t)]}
+        +
+        \underbrace{\sum_{v\in\Vcal}p_t(v)\,\nabla_\theta\log p_t(v)}_{=\,0\text{ by \eqref{eq:opd.sampled-token-gradient-expectation}}}.
+    \end{align*}
+    All of the signal is in the first sum, which comes from differentiating the sampling
+    distribution. We record this as
+    \begin{align}
+        \nabla_\theta\mathrm{kl}_t(x,y_{<t})
+        =
+        \sum_{v\in\Vcal}p_t(v)\,\delta_t(v)\,\nabla_\theta\log p_t(v).
+        \label{eq:opd.full-kl-grad}
+    \end{align}
+    \item \emph{The surrogate.} The pseudocode below therefore returns the loss as 
+    $\operatorname{sg}[\delta_t(y_t)]\log p_t(y_t)$ instead of $\delta_t(y_t)$. Its value
+    has no meaning, but its gradient is $\delta_t(y_t)\nabla_\theta\log p_t(y_t)$, whose
+    expectation over $y_t\sim p_t$ is the first sum in step 3, i.e.,
+    $\nabla_\theta\mathrm{kl}_t(x,y_{<t})$. This is the score-function (REINFORCE)
+    estimator, and it is the same construction as $A_t^{\mathrm{OPD}}$ in PG-OPD implemented in VeRL (disscussed below).
+\end{enumerate}
+
+\subsection{Pseudocode}
+
+The pseudocode below implements the three variants. In \texttt{full} and \texttt{topk},
+the returned value is the per-state divergence itself; in \texttt{sampled}, it is the
+surrogate from Section~\ref{sec:opd.gradients}.
 
 \begin{codeblock}[language=Python]
 def opd_token_loss(
@@ -472,7 +714,8 @@ def opd_token_loss(
         token_idx = sampled_tokens.unsqueeze(dim=-1)
         s_token = s_logp.gather(dim=-1, index=token_idx).squeeze(dim=-1)
         t_token = t_logp.gather(dim=-1, index=token_idx).squeeze(dim=-1)
-        return s_token - t_token
+        # Not the loss value itself; see the gradient discussion above.
+        return (s_token - t_token).detach() * s_token
 
     if mode == "full":
         return (s_logp.exp() * (s_logp - t_logp)).sum(dim=-1)
@@ -516,8 +759,8 @@ for step in range(total_steps):
 
     # Three alternatives; choose one for a training run.
     sampled_loss = opd_token_loss(s_logits, t_logits, mode="sampled", sampled_tokens=response_tokens)
-    % full_loss = opd_token_loss(s_logits, t_logits, mode="full")
-    % topk_loss = opd_token_loss(s_logits, t_logits, mode="topk", top_k=64)
+    # full_loss = opd_token_loss(s_logits, t_logits, mode="full")
+    # topk_loss = opd_token_loss(s_logits, t_logits, mode="topk", top_k=64)
 
     # Exclude padding after each response's EOS token.
     active = response_activity_mask(response_tokens)
@@ -527,12 +770,13 @@ for step in range(total_steps):
     optimizer.step()
 \end{codeblock}
 
+
 \section{OPD Implementation Discussions}
 
-\subsection{VeRL}
+\subsection{Original VeRL}
 VeRL has two paths for you to use OPD:
 \begin{itemize}
-    \item \textbf{PG-OPD}: The negativedistillation loss is used as the token-level advantage estimation in the PPO loss. Specifically, for the sampled student token $y_t$, construct the detached token-level signal:
+    \item \textbf{PG-OPD}: The negative distillation loss is used as the token-level advantage estimation in the PPO loss. Specifically, for the sampled student token $y_t$, construct the detached token-level signal:
     $$ 
     A_t^{\mathrm{OPD}} = -\operatorname{sg}\left[ \log p_t(y_t) - \log q_t(y_t)\right], 
     $$
@@ -544,9 +788,480 @@ VeRL has two paths for you to use OPD:
     \item \textbf{GKD-OPD}: The distillation loss is the target. However, the VeRL implements the \citet{agarwal2024policy} so the forward-KL is used, i.e., when using the top-k to do the KL estimation, the teacher-top-k support is used.
 \end{itemize}
 
+\subsubsection{OPD as a PPO Update}
+\label{sec:opd.as-ppo}
+
+The VeRL actor is built for PPO. Given responses sampled from the rollout policy
+$\pi_{\theta_{\mathrm{old}}}$ and one advantage $\hat A_t$ per response position, it minimizes the
+clipped objective, aggregated over response positions according to \texttt{loss\_agg\_mode},
+\begin{align}
+    \max\!\Big\{
+        -\hat A_t\,w_t(\theta),\;
+        -\hat A_t\operatorname{clip}\!\big(w_t(\theta),1-\epsilon_{\mathrm{low}},1+\epsilon_{\mathrm{high}}\big)
+    \Big\},
+    \qquad
+    w_t(\theta)
+    \coloneqq
+    \frac{p_t(y_t)}{p_t^{\mathrm{old}}(y_t)},
+    \label{eq:opd.ppo-clip}
+\end{align}
+where $p_t^{\mathrm{old}}(v)\coloneqq\pi_{\theta_{\mathrm{old}}}(v\mid x,y_{<t})$. PG-OPD reuses this
+objective unchanged and only supplies the advantage: in the
+\href{https://github.com/verl-project/verl/blob/adc7eefa16dad75c5f7b878823d5a76eac90c7b3/verl/trainer/distillation/losses.py#L280-L288}{code},
+\icode{advantages=-distillation_losses.detach()}, where \texttt{distillation\_losses} is the
+per-token log-ratio (the \texttt{k1} estimator). In the notation of
+Section~\ref{sec:opd.gradients},
+\begin{align*}
+    \hat A_t=A_t^{\mathrm{OPD}}=-\operatorname{sg}\!\left[\delta_t(y_t)\right].
+\end{align*}
+
+\paragraph{The update loop.}
+Each PPO iteration of the \href{https://github.com/verl-project/verl/blob/adc7eefa16dad75c5f7b878823d5a76eac90c7b3/verl/trainer/ppo/ray_trainer.py#L1560}{trainer}
+samples responses with the current parameters $\theta_{\mathrm{old}}$, computes
+\texttt{old\_log\_probs} once, i.e., $\log p_t^{\mathrm{old}}(y_t)$, and then calls the actor
+update. The update
+(\href{https://github.com/verl-project/verl/blob/adc7eefa16dad75c5f7b878823d5a76eac90c7b3/verl/workers/engine_workers.py#L242-L310}{\texttt{train\_mini\_batch}})
+splits the batch into mini-batches, passes over them \texttt{epochs} times, and takes one
+optimizer step per mini-batch. Denote the parameters at these successive steps by
+$\theta^{(0)}=\theta_{\mathrm{old}},\theta^{(1)},\theta^{(2)},\ldots$. At the next PPO
+iteration, $\theta_{\mathrm{old}}$ is reset to the current parameters and the same pattern
+repeats. Consequently, $w_t(\theta)=1$ holds only at the first optimizer step of each PPO
+iteration; at every later step of the same iteration, $\theta\neq\theta_{\mathrm{old}}$.
+
+In upstream VeRL the advantage is \emph{not} frozen at rollout time: the
+\href{https://github.com/verl-project/verl/blob/adc7eefa16dad75c5f7b878823d5a76eac90c7b3/verl/trainer/distillation/losses.py#L373-L405}{per-token distillation loss}
+is recomputed in every mini-batch from the current forward pass
+(\texttt{model\_output["log\_probs"]}) and then detached. So at step $\theta^{(j)}$,
+$\hat A_t=-\operatorname{sg}[\delta_t(y_t)]$ with $\delta_t$ evaluated at $\theta^{(j)}$.
+
+\paragraph{Gradient of one term.}
+Since $p_t^{\mathrm{old}}(y_t)$ does not depend on $\theta$, given
+\eqref{eq:opd.log-derivative}, one has
+\begin{align*}
+    \nabla_\theta w_t(\theta)
+    =
+    \frac{\nabla_\theta p_t(y_t)}{p_t^{\mathrm{old}}(y_t)}
+    =
+    \frac{p_t(y_t)}{p_t^{\mathrm{old}}(y_t)}\,\nabla_\theta\log p_t(y_t)
+    =
+    w_t(\theta)\,\nabla_\theta\log p_t(y_t).
+\end{align*}
+Since $\hat A_t$ is constant in $\theta$ with value $-\delta_t(y_t)$, the gradient of
+\eqref{eq:opd.ppo-clip} is
+\begin{align*}
+    -\hat A_t\,\nabla_\theta w_t(\theta)
+    =
+    w_t(\theta)\,\delta_t(y_t)\,\nabla_\theta\log p_t(y_t)
+\end{align*}
+when the clip is not binding, and zero when the clip (or the dual-clip bound) binds,
+because the clipped branch is then constant in $\theta$.
+\begin{itemize}
+    \item \textbf{First optimizer step of each PPO iteration.} Here
+    $\theta=\theta_{\mathrm{old}}$, so $w_t=1$ and neither clip binds, because
+    $1\in[1-\epsilon_{\mathrm{low}},1+\epsilon_{\mathrm{high}}]$ and the dual-clip bound
+    exceeds one. The gradient is $\delta_t(y_t)\nabla_\theta\log p_t(y_t)$, exactly the
+    gradient of the sampled-token surrogate $\operatorname{sg}[\delta_t(y_t)]\log p_t(y_t)$ of
+    Section~\ref{sec:opd.gradients}. Its expectation over $y_t\sim p_t$ is
+    $\nabla_\theta\mathrm{kl}_t(x,y_{<t})$, i.e., term (A) of \eqref{eq:opd.exact-gradient}.
+    \item \textbf{Later optimizer steps of the same iteration.} Now $w_t\neq 1$ in general,
+    and $y_t$ was drawn from $p_t^{\mathrm{old}}$ rather than $p_t$. Where the clip does not
+    bind, the ratio corrects for this exactly:
+    \begin{align*}
+        \E_{y_t\sim p_t^{\mathrm{old}}(\cdot\mid x,y_{<t})}\!\left[w_t\,\delta_t(y_t)\,\nabla_\theta\log p_t(y_t)\right]
+        =
+        \sum_{v\in\Vcal}p_t^{\mathrm{old}}(v)\,\frac{p_t(v)}{p_t^{\mathrm{old}}(v)}\,
+        \delta_t(v)\,\nabla_\theta\log p_t(v)
+        =
+        \nabla_\theta\mathrm{kl}_t(x,y_{<t}),
+    \end{align*}
+    evaluated at the current $\theta$, where the last equality is \eqref{eq:opd.full-kl-grad}.
+    This identity holds for a fixed prefix $(x,y_{<t})$; the expectation is over $y_t$ only.
+    Two things still separate the update from term (A) of \eqref{eq:opd.exact-gradient} at
+    the current $\theta$.
+    \begin{enumerate}
+        \item \emph{Prefixes.} Term (A) averages $\nabla_\theta\mathrm{kl}_t(x,y_{<t})$ over
+        prefixes drawn from $\pi_\theta$, but these prefixes were drawn from
+        $\pi_{\theta_{\mathrm{old}}}$. The ratio $w_t$ reweights only $y_t$, not $y_{<t}$.
+        \item \emph{Clipping.} The identity uses the unclipped gradient. A token with
+        $\hat A_t>0$ and $w_t>1+\epsilon_{\mathrm{high}}$, or with $\hat A_t<0$ and
+        $w_t<1-\epsilon_{\mathrm{low}}$ (or beyond the dual-clip bound), contributes zero
+        gradient, so the expected update differs from $\nabla_\theta\mathrm{kl}_t(x,y_{<t})$.
+        This bias is intentional: it is PPO's trust region, which stops pushing a token's
+        probability once it has moved far enough from the rollout policy.
+    \end{enumerate}
+\end{itemize}
+
+\paragraph{Dictionary between PPO and OPD.}
+\begin{itemize}
+    \item \textbf{Reward.} The per-token reward is $-\delta_t(y_t)$: the teacher's
+    log-probability minus the student's at the sampled token. There is no task reward.
+    \item \textbf{Return and discount.} The advantage is the immediate reward only, i.e.,
+    discount $\gamma=0$. This is exactly the step of dropping term (B) in
+    \eqref{eq:opd.exact-gradient}. Using the reward-to-go
+    $\hat A_t=-\sum_{t'\geq t}\operatorname{sg}[\delta_{t'}(y_{t'})]$ ($\gamma=1$) would add an
+    unbiased estimate of term (B), since
+    $\E[\delta_{t'}(y_{t'})\mid x,y_{<t'}]=\mathrm{kl}_{t'}(x,y_{<t'})$ and
+    $\nabla_\theta\log p_t(y_t)$ is fixed given $y_{<t'}$ for $t<t'$.
+    \item \textbf{Baseline and critic.} None; the advantage is not centered or normalized.
+    \item \textbf{Ratio and clipping.} Inactive at the first optimizer step of each PPO
+    iteration. At the later steps of the iteration, the ratio corrects the next-token
+    sampling and the clip keeps $\theta$ close to $\theta_{\mathrm{old}}$, exactly as in PPO.
+\end{itemize}
+\begin{remark}[Is VeRL optimizing the OPD objective?]
+    Ignore clipping. At later optimizer steps of a PPO iteration, the expected update is not
+    term (A) of \eqref{eq:opd.exact-gradient} at the current $\theta$. This is not a bug, for
+    three reasons.
+    \begin{enumerate}
+        \item \emph{It is the exact gradient of a frozen-state surrogate.} Define the objective
+        with the prefix distribution frozen at the rollout policy,
+        \begin{align*}
+            \tilde J(\theta)
+            \coloneqq
+            \E_{(x,y)\sim\mu_{\theta_{\mathrm{old}}}}
+            \left[
+                \sum_{t=1}^{T(y)}\mathrm{kl}_t(x,y_{<t})
+            \right],
+        \end{align*}
+        where only $\mathrm{kl}_t$, through $p_t$, depends on $\theta$. Its gradient is
+        $\E_{\mu_{\theta_{\mathrm{old}}}}[\sum_t\nabla_\theta\mathrm{kl}_t(x,y_{<t})]$, which by the
+        per-prefix identity above is the expectation of the unclipped update
+        $w_t\,\delta_t(y_t)\,\nabla_\theta\log p_t(y_t)$ summed over $t$. So, with clipping
+        ignored, VeRL runs unbiased stochastic gradient descent on $\tilde J$. In expectation,
+        $\tilde J$ has the same gradient as the unclipped importance-weighted surrogate
+        $\E_{\mu_{\theta_{\mathrm{old}}}}[\sum_t w_t(\theta)\hat A_t]$ used by TRPO; PPO optimizes a
+        clipped version of that surrogate.
+        \item \emph{The surrogate is accurate near $\theta_{\mathrm{old}}$.} At
+        $\theta=\theta_{\mathrm{old}}$, $\nabla_\theta\tilde J$ equals term (A). For general
+        $\theta$, the two differ only in the prefix distribution. Let
+        $G\coloneqq\sup_{(x,y)}\|\sum_{t=1}^{T(y)}\nabla_\theta\mathrm{kl}_t(x,y_{<t})\|$, assumed
+        finite (it is whenever $\Dcal_x$ has finite support, since responses are capped at
+        $T_{\max}$). Since
+        $\|\E_P[f]-\E_Q[f]\|\le 2\,\mathrm{TV}(P,Q)\sup\|f\|$, Pinsker's inequality, and the
+        chain rule for the KL divergence give
+        \begin{align*}
+            \left\|
+                \text{(A)}-\nabla_\theta\tilde J(\theta)
+            \right\|
+            \le
+            2G\,\mathrm{TV}(\mu_\theta,\mu_{\theta_{\mathrm{old}}})
+            \le
+            G\sqrt{2\,D_{\mathrm{KL}}(\mu_{\theta_{\mathrm{old}}}\|\mu_\theta)},
+            \\
+            D_{\mathrm{KL}}(\mu_{\theta_{\mathrm{old}}}\|\mu_\theta)
+            =
+            \E_{\mu_{\theta_{\mathrm{old}}}}
+            \left[
+                \sum_{t=1}^{T(y)}D_{\mathrm{KL}}(p_t^{\mathrm{old}}\|p_t)
+            \right].
+        \end{align*}
+        The gap is therefore controlled by how far the policy has moved since the rollout,
+        which is what a trust region (PPO's clip, or TRPO's KL constraint) is designed to keep
+        small. The prefix mismatch is thus not a separate flaw next to the trust region; it is
+        the reason a trust region is needed.
+        \item \emph{OPD already approximates more coarsely.} Dropping term (B), i.e., using
+        $\gamma=0$, means that even the first optimizer step of each iteration does not follow
+        the gradient of \eqref{eq:opd.token-kl}. Every standard OPD implementation makes this
+        choice by design; the later optimizer steps add a second, local approximation on top
+        of it.
+    \end{enumerate}
+    If exactness with respect to term (A) is required, use a single mini-batch and a single
+    epoch per rollout. Every update is then an unbiased estimate of term (A), at the cost of
+    sample efficiency.
+\end{remark}
+
+Rethinking-OPD, discussed next, uses the same machinery but replaces the single sampled
+token $y_t$ by $k$ enumerated candidates.
+
+\subsection{Rethink OPD modified VeRL}
+
+\href{https://github.com/Thinking-Space/Rethinking-OPD/tree/ac26e38d6f1572eb027597b48a9f4e01f6915ef8}{Github Repo of Rethinking-OPD} implements a modified version of the student top-k OPD \eqref{eq:opd.top-k-objective}. It keeps the student
+top-$k$ set $S_t$, but instead of backpropagating the renormalized divergence
+$D_{\mathrm{KL}}(\bar p_t^{(S_t)}\|\bar q_t^{(S_t)})$, it runs the PPO update of
+Section~\ref{sec:opd.as-ppo} with one advantage per \emph{candidate} $i\in S_t$ rather than
+per sampled token. We first describe and analyze the method, then map it to the code.
+
+\subsubsection{The Method}
+\label{sec:opd.rethinking-method}
+
+Throughout, $\delta_t(i)=\log p_t(i)-\log q_t(i)$ as in Section~\ref{sec:opd.gradients}.
+
+\paragraph{Per-candidate advantage.}
+Fix a prefix $(x,y_{<t})$. Every variant aims at the per-state gradient
+$\nabla_\theta\mathrm{kl}_t(x,y_{<t})$ (term (A) of \eqref{eq:opd.exact-gradient}). Define the
+per-token advantage function $\hat A_t(v)\coloneqq-\operatorname{sg}[\delta_t(v)]$ for
+$v\in\Vcal$. By \eqref{eq:opd.full-kl-grad}, the target is an expectation under the student's
+next-token distribution:
+\begin{align}
+    \nabla_\theta\mathrm{kl}_t(x,y_{<t})
+    =
+    \sum_{v\in\Vcal}p_t(v)\,\delta_t(v)\,\nabla_\theta\log p_t(v)
+    =
+    \E_{v\sim p_t}\!\left[-\hat A_t(v)\,\nabla_\theta\log p_t(v)\right].
+    \label{eq:opd.kl-grad-expectation}
+\end{align}
+There are two natural ways to estimate this expectation.
+\begin{itemize}
+    \item \textbf{Sample one token (PG-OPD).} Draw $y_t\sim p_t$ and use
+    $-\hat A_t(y_t)\nabla_\theta\log p_t(y_t)$. This is a one-sample Monte Carlo estimate of
+    \eqref{eq:opd.kl-grad-expectation}: it is random, since it depends on $y_t$; it is
+    unbiased; and it has sampling variance.
+    \item \textbf{Enumerate a candidate set (Rethinking-OPD).} Replace $p_t$ by its
+    renormalization $\bar p_t^{(S_t)}$ on $S_t$ and compute the expectation exactly:
+    \begin{align*}
+        \E_{i\sim\bar p_t^{(S_t)}}\!\left[-\hat A_t(i)\,\nabla_\theta\log p_t(i)\right]
+        =
+        -\sum_{i\in S_t}\bar p_t^{(S_t)}(i)\,\hat A_t(i)\,\nabla_\theta\log p_t(i).
+    \end{align*}
+    This estimate is deterministic given the prefix, so it has no variance over $y_t$. It
+    equals \eqref{eq:opd.kl-grad-expectation} exactly when $S_t=\Vcal$ and is biased when
+    $|S_t|<|\Vcal|$; the bias is characterized below.
+\end{itemize}
+The first estimate has the form ``advantage times the score $\nabla_\theta\log p_t(\cdot)$ of a
+token''. The second estimate has the same form, once per candidate: the coefficient of
+$\nabla_\theta\log p_t(i)$ is
+\begin{align}
+    A_{t,i}
+    \coloneqq
+    \bar p_t^{(S_t)}(i)\,\hat A_t(i)
+    =
+    -\operatorname{sg}\!\left[
+        \bar p_t^{(S_t)}(i)\,\delta_t(i)
+    \right],
+    \qquad i\in S_t,
+    \label{eq:opd.rethinking-cand-advantage}
+\end{align}
+so that the second estimate equals $-\sum_{i\in S_t}A_{t,i}\,\nabla_\theta\log p_t(i)$. That is,
+$A_{t,i}$ is the PG-OPD advantage of token $i$, weighted by $\bar p_t^{(S_t)}(i)$. In PG-OPD this
+weight is supplied implicitly by sampling; here the candidates are enumerated, so it must
+appear explicitly. Because each candidate now looks like a sampled token with its own
+advantage, the PPO loss of Section~\ref{sec:opd.as-ppo} can be reused unchanged, as described next.
+
+\paragraph{The loss.}
+The PPO objective \eqref{eq:opd.ppo-clip} is applied to each candidate and summed over
+$S_t$. With the per-candidate ratio $w_{t,i}(\theta)\coloneqq p_t(i)/p_t^{\mathrm{old}}(i)$, the
+per-state loss is
+\begin{align}
+    \sum_{i\in S_t}
+    \max\!\Big\{
+        -A_{t,i}\,w_{t,i}(\theta),\;
+        -A_{t,i}\operatorname{clip}\!\big(w_{t,i}(\theta),1-\epsilon_{\mathrm{low}},1+\epsilon_{\mathrm{high}}\big)
+    \Big\}.
+    \label{eq:opd.rethinking-ppo}
+\end{align}
+The sampled token $y_t$ does not appear in \eqref{eq:opd.rethinking-ppo}; it only determines
+which prefixes $(x,y_{<t})$ are visited. At the first optimizer step of each PPO iteration,
+$w_{t,i}=1$, the clip is inactive, and $\nabla_\theta w_{t,i}=w_{t,i}\nabla_\theta\log p_t(i)=\nabla_\theta\log p_t(i)$,
+exactly as in Section~\ref{sec:opd.as-ppo}. The gradient of \eqref{eq:opd.rethinking-ppo}
+therefore equals that of the policy-gradient surrogate (``cand'' for candidate)
+\begin{highlight}
+    \begin{align}
+        \ell_t^{\mathrm{cand}}
+        \coloneqq
+        -\sum_{i\in S_t}A_{t,i}\log p_t(i)
+        =
+        \sum_{i\in S_t}
+        \operatorname{sg}\!\left[
+            \bar p_t^{(S_t)}(i)\,\delta_t(i)
+        \right]
+        \log p_t(i).
+        \label{eq:opd.rethinking-loss}
+    \end{align}
+\end{highlight}
+Like the sampled-token surrogate, its value has no meaning; only its gradient matters.
+With $S_t$ held fixed, that gradient is
+\begin{align}
+    g_t
+    \coloneqq
+    \nabla_\theta\ell_t^{\mathrm{cand}}
+    =
+    \sum_{i\in S_t}
+    \bar p_t^{(S_t)}(i)\,\delta_t(i)\,\nabla_\theta\log p_t(i).
+    \label{eq:opd.rethinking-grad}
+\end{align}
+At later optimizer steps of the same iteration, the per-candidate ratio and clip act
+exactly as in Section~\ref{sec:opd.as-ppo}. The rest of this section analyzes $g_t$.
+
+\paragraph{Relation to the full-vocabulary gradient.}
+Compare $g_t$ with the exact per-state gradient \eqref{eq:opd.full-kl-grad}, derived in
+step~3 of the sampled-token analysis in Section~\ref{sec:opd.gradients}. Sampled-token OPD estimates \eqref{eq:opd.full-kl-grad} with a single draw
+$v=y_t\sim p_t$, so the sampling itself supplies the weight $p_t(v)$. Rethinking-OPD
+enumerates the candidates instead of sampling them, so the weight must appear
+explicitly: \eqref{eq:opd.rethinking-grad} is \eqref{eq:opd.full-kl-grad} truncated
+to $S_t$ and renormalized, and it recovers \eqref{eq:opd.full-kl-grad} exactly when
+$S_t=\Vcal$.
+
+\paragraph{Comparison with student-top-$k$ OPD.}
+Write $\bar\delta_t(i)\coloneqq\log\bar p_t^{(S_t)}(i)-\log\bar q_t^{(S_t)}(i)$ for the
+renormalized log-ratio, so that
+$D_{\mathrm{KL}}(\bar p_t^{(S_t)}\|\bar q_t^{(S_t)})=\sum_{i\in S_t}\bar p_t^{(S_t)}(i)\,\bar\delta_t(i)$.
+The argument of step~3 in Section~\ref{sec:opd.gradients} applies verbatim to this pair of
+distributions on $S_t$. It uses the product rule,
+$\nabla_\theta\bar\delta_t(i)=\nabla_\theta\log\bar p_t^{(S_t)}(i)$,
+\eqref{eq:opd.log-derivative}, and
+\begin{align*}
+    \sum_{i\in S_t}\bar p_t^{(S_t)}(i)\,\nabla_\theta\log\bar p_t^{(S_t)}(i)
+    =
+    \nabla_\theta\sum_{i\in S_t}\bar p_t^{(S_t)}(i)
+    =
+    \nabla_\theta 1
+    =
+    0.
+\end{align*}
+Placing the resulting top-$k$ gradient next to the other two per-state gradients,
+\begin{align}
+    \text{full vocabulary:}\quad
+    \nabla_\theta\mathrm{kl}_t(x,y_{<t})
+    &=
+    \sum_{v\in\Vcal}p_t(v)\,\delta_t(v)\,\nabla_\theta\log p_t(v),
+    \nonumber\\
+    \text{student top-}k\text{:}\quad
+    \nabla_\theta D_{\mathrm{KL}}\!\left(\bar p_t^{(S_t)}\,\middle\|\,\bar q_t^{(S_t)}\right)
+    &=
+    \sum_{i\in S_t}\bar p_t^{(S_t)}(i)\,\bar\delta_t(i)\,\nabla_\theta\log\bar p_t^{(S_t)}(i),
+    \label{eq:opd.top-k-grad}\\
+    \text{Rethinking-OPD:}\quad
+    g_t
+    &=
+    \sum_{i\in S_t}\bar p_t^{(S_t)}(i)\,\delta_t(i)\,\nabla_\theta\log p_t(i).
+    \nonumber
+\end{align}
+Top-$k$ OPD renormalizes everything: the weights, the log-ratio, and the score. It therefore
+sees only the \emph{shape} of $p_t$ on $S_t$. Rethinking-OPD renormalizes only the weights and
+keeps the unnormalized log-ratio and score of the full-vocabulary gradient.
+
+To relate the last two, for $i\in S_t$, substitute
+$\bar\delta_t(i)=\delta_t(i)-c_t$ with $c_t\coloneqq\log(P_{S_t}/Q_{S_t})$, where
+$P_{S_t}=\sum_{i\in S_t}p_t(i)$ and $Q_{S_t}=\sum_{i\in S_t}q_t(i)$ are the student and teacher
+masses on $S_t$ (as in the remark after \eqref{eq:opd.top-k-objective}), and
+$\nabla_\theta\log\bar p_t^{(S_t)}(i)=\nabla_\theta\log p_t(i)-\nabla_\theta\log P_{S_t}$ into
+\eqref{eq:opd.top-k-grad}. Using
+$\sum_{i\in S_t}\bar p_t^{(S_t)}(i)\nabla_\theta\log p_t(i)=\sum_{i\in S_t}\nabla_\theta p_t(i)/P_{S_t}=\nabla_\theta\log P_{S_t}$
+and $\sum_{i\in S_t}\bar p_t^{(S_t)}(i)=1$,
+\begin{align*}
+    \nabla_\theta D_{\mathrm{KL}}\!\left(\bar p_t^{(S_t)}\,\middle\|\,\bar q_t^{(S_t)}\right)
+    &=
+    \sum_{i\in S_t}\bar p_t^{(S_t)}(i)\,\big(\delta_t(i)-c_t\big)
+    \big(\nabla_\theta\log p_t(i)-\nabla_\theta\log P_{S_t}\big)
+    \\
+    &=
+    g_t
+    -
+    \E_{i\sim\bar p_t^{(S_t)}}\!\left[\delta_t(i)\right]\nabla_\theta\log P_{S_t}
+    -
+    c_t\,\nabla_\theta\log P_{S_t}
+    +
+    c_t\,\nabla_\theta\log P_{S_t}.
+\end{align*}
+The last two terms cancel, so
+\begin{align}
+    g_t
+    =
+    \underbrace{
+    \nabla_\theta D_{\mathrm{KL}}\!\left(\bar p_t^{(S_t)}\,\middle\|\,\bar q_t^{(S_t)}\right)
+    }_{\text{shape on } S_t}
+    +
+    \underbrace{
+    \E_{i\sim\bar p_t^{(S_t)}}\!\left[\delta_t(i)\right]\nabla_\theta\log P_{S_t}
+    }_{\text{mass on } S_t}.
+    \label{eq:opd.rethinking-vs-topk}
+\end{align}
+The first term is exactly the gradient of student-top-$k$ OPD. The second term changes only the
+student's total mass $P_{S_t}$ on $S_t$: under gradient descent it moves mass onto $S_t$ when
+$\E_{\bar p}[\delta_t]<0$ (on average the teacher assigns more probability to the candidates
+than the student) and off $S_t$ otherwise. This is the information that
+\eqref{eq:opd.kl-decomposition} shows is discarded by renormalization. At $k=1$ the first term
+vanishes and only the mass term remains, which is why Rethinking-OPD does not degenerate.
+
+\paragraph{What $g_t$ descends.}
+An update direction alone does not say what the method converges to. We therefore ask
+whether $g_t$ is the gradient of some function at a fixed state. Recall the student
+and teacher masses on $S_t$ from the remark after \eqref{eq:opd.top-k-objective},
+$P_{S_t}=\sum_{i\in S_t}p_t(i)$ and $Q_{S_t}=\sum_{i\in S_t}q_t(i)$, and the
+on-support part of the reverse KL in \eqref{eq:opd.kl-split},
+\begin{align*}
+    F_t
+    \coloneqq
+    \sum_{i\in S_t}p_t(i)\log\frac{p_t(i)}{q_t(i)}
+    =
+    \sum_{i\in S_t}p_t(i)\,\delta_t(i).
+\end{align*}
+By the product rule and \eqref{eq:opd.log-derivative}, with $\nabla_\theta q_t=0$,
+\begin{align*}
+    \nabla_\theta F_t
+    =
+    \sum_{i\in S_t}\big(\nabla_\theta p_t(i)\,\delta_t(i)+p_t(i)\,\nabla_\theta\log p_t(i)\big)
+    =
+    \sum_{i\in S_t}p_t(i)\,\delta_t(i)\,\nabla_\theta\log p_t(i)
+    +
+    \nabla_\theta P_{S_t}.
+\end{align*}
+Over the full vocabulary the last term would be $\nabla_\theta 1=0$, but on $S_t$ it is
+not. Since $\bar p_t^{(S_t)}(i)=p_t(i)/P_{S_t}$, the first sum equals $P_{S_t}\,g_t$, so
+\begin{align}
+    g_t
+    =
+    \frac{1}{P_{S_t}}\,
+    \nabla_\theta\Phi_t,
+    \qquad
+    \Phi_t
+    \coloneqq
+    F_t-P_{S_t}
+    =
+    \sum_{i\in S_t}
+    \left[
+        p_t(i)\log\frac{p_t(i)}{q_t(i)}-p_t(i)
+    \right].
+    \label{eq:opd.rethinking-potential}
+\end{align}
+Here $1/P_{S_t}$ is evaluated at the current parameters and not differentiated: it
+enters through the detached weights and only rescales the step at each state. Hence,
+at a fixed state and with $S_t$ fixed, Rethinking-OPD performs gradient descent on
+$\Phi_t$, the on-support part of the reverse KL minus the student mass on $S_t$.
+
+\paragraph{Minimizer of $\Phi_t$.}
+Each summand of \eqref{eq:opd.rethinking-potential} depends on a single probability
+$u=p_t(i)$ through $\varphi(u)=u\log(u/q_t(i))-u$, with $\varphi'(u)=\log(u/q_t(i))$ and
+$\varphi''(u)=1/u>0$. So $\varphi$ is strictly convex and minimized at $u=q_t(i)$, and
+$\Phi_t$ is minimized exactly when $p_t(i)=q_t(i)$ for all $i\in S_t$. This is
+attainable, since $Q_{S_t}\le 1$ leaves mass $1-Q_{S_t}$ for the complement. Unlike
+\eqref{eq:opd.top-k-objective}, the method therefore matches the teacher's
+\emph{absolute} probabilities on $S_t$, not only their shape.\footnote{Adding the
+constant $Q_{S_t}$, which does not change the gradient, gives
+$\Phi_t+Q_{S_t}=\sum_{i\in S_t}[p_t(i)\log(p_t(i)/q_t(i))-p_t(i)+q_t(i)]\ge 0$, with
+equality iff $p_t=q_t$ on $S_t$. This is the generalized KL divergence between the
+unnormalized vectors $(p_t(i))_{i\in S_t}$ and $(q_t(i))_{i\in S_t}$.}
+At $k=1$, $\Phi_t=\varphi(p_t(v_t^*))$ with $S_t=\{v_t^*\}$, minimized at
+$p_t(v_t^*)=q_t(v_t^*)$, whereas \eqref{eq:opd.top-k-objective} is identically zero. At the
+level of objectives, \eqref{eq:opd.kl-on-support} gives
+$\Phi_t=P_{S_t}D_{\mathrm{KL}}(\bar p_t^{(S_t)}\|\bar q_t^{(S_t)})+\big[P_{S_t}\log(P_{S_t}/Q_{S_t})-P_{S_t}\big]$;
+the bracket, as a function of $P_{S_t}$, is minimized at $P_{S_t}=Q_{S_t}$, which is the
+objective-level counterpart of the mass term in \eqref{eq:opd.rethinking-vs-topk}.
+
+\paragraph{Are the weights necessary?}
+In sampled-token OPD the advantage $-\operatorname{sg}[\delta_t(y_t)]$ carries no probability
+weight, so the weight $\bar p_t^{(S_t)}(i)$ in \eqref{eq:opd.rethinking-cand-advantage} may look
+redundant. This is exactly the question raised in
+\href{https://github.com/Thinking-Space/Rethinking-OPD/issues/13}{Rethinking-OPD issue \#13},
+which proposes $A_{t,i}=-\operatorname{sg}[\delta_t(i)]$ (\icode{rm_scores = -kl_val}). The
+weight is necessary: the candidates are enumerated rather than sampled, so nothing else
+supplies the factor $p_t(v)$ of \eqref{eq:opd.full-kl-grad}. Without it the gradient becomes
+\begin{align}
+    \sum_{i\in S_t}\delta_t(i)\,\nabla_\theta\log p_t(i)
+    =
+    \nabla_\theta\,
+    \frac{1}{2}\sum_{i\in S_t}\delta_t(i)^2,
+\end{align}
+an unweighted squared log-ratio on $S_t$. It is still minimized at $p_t=q_t$ on
+$S_t$, but it is not a KL divergence. It also treats all $k$ candidates equally, so
+tail candidates with small $p_t(i)$ and noisy log-ratios count as much as the head of
+the distribution.
 
 
-\href{https://github.com/Thinking-Space/Rethinking-OPD/tree/ac26e38d6f1572eb027597b48a9f4e01f6915ef8}{Github Repo of Rethinking-OPD} implements a modified version of \eqref{eq:opd.top-k-objective}. The key difference is that instead of using $\sum_{v\in S_t} \bar p_t^{(S_t)}[\log{\bar p_t^{(S_t)}(v)}-\log{\bar q_t^{(S_t)}(v)}]$, it used $\sum_{v\in S_t} \bar p_t^{(S_t)}[\log{p_t(v)}-\log{q_t(v)}]$, whose primary purpose is to avoid the issue of $k=1$. The validility of this modification is discussed later. The computattion flow inside \icode{ppo/ray_trainer.py} is as follows.
+\subsubsection{Implementation Walkthrough}
+\label{sec:opd.rethinking-impl}
+
+The computation flow inside \icode{ppo/ray_trainer.py} is as follows. Each step computes one
+of the quantities defined in Section~\ref{sec:opd.rethinking-method}.
 \begin{enumerate}
 
     \item  
@@ -762,18 +1477,27 @@ rm_scores = -kl_val * norm_weights
         {\sum_{j\in S_t}\pi_\theta(j\mid s_t)}
         \equiv \bar{p}_t^{(S_t)}(i)  \text{ for } i\in S_t
     \]
-    and the produced candidate-level reward is
-    \[
+    and \texttt{kl\_val} is $\delta_t(i)$. The produced candidate-level reward is
+    \begin{align}
         r_{t,i}
         =
-        \bar{p}_t^{(S_t)}(i)
-        \left[
-            \log q_t(i)
-            -
-            \log p_t(i)
-        \right]  \text{ for } i\in S_t.
-    \]
-    We will explain it in the following part.
+        -\operatorname{sg}\!\left[
+            \bar{p}_t^{(S_t)}(i)\,\delta_t(i)
+        \right]
+        \qquad \text{for } i\in S_t.
+        \label{eq:opd.rethinking-reward}
+    \end{align}
+    i.e., the per-candidate advantage \eqref{eq:opd.rethinking-cand-advantage} before masking.
+    The stop-gradient is automatic: \texttt{S\_logp} and \texttt{T\_on\_S} were
+    computed in earlier forward passes and carry no gradient. Note that \texttt{rm\_scores}
+    itself is never differentiated. Summing it over the candidates gives the value
+    $-\sum_{i\in S_t}\bar p_t^{(S_t)}(i)\,\delta_t(i)$, but differentiating that sum through
+    $\bar p_t^{(S_t)}$ would not give $g_t$; the gradient enters only through the PPO loss in
+    the update step. Finally, \texttt{compute\_reward\_weights} has a \texttt{normalize=False}
+    option (used by the \texttt{union-intersection} strategy), which uses the weights $p_t(i)$
+    instead of $\bar p_t^{(S_t)}(i)$; the factor $1/P_{S_t}$ in
+    \eqref{eq:opd.rethinking-potential} then disappears and the gradient is exactly
+    $\nabla_\theta\Phi_t$.
     % At entry to this function, the provenance of its important inputs is
     % therefore
     % \begin{codeblock}[language=Python]
@@ -803,17 +1527,57 @@ advantage = compute_advantage(
 # (bsz, seqlen, top_k) and passed here as the token-level advantage 
 advantage = rm_scores * response_mask
 \end{codeblock}
+    So the reward is used directly as the advantage, with no return, baseline, or
+    normalization. Writing $m_t\in\{0,1\}$ for the response mask,
+    \begin{align}
+        A_{t,i}
+        =
+        m_t\, r_{t,i}
+        =
+        -m_t\operatorname{sg}\!\left[
+            \bar{p}_t^{(S_t)}(i)\,\delta_t(i)
+        \right]
+        \qquad \text{for } i\in S_t.
+        \label{eq:opd.rethinking-advantage}
+    \end{align}
+    On response positions this is exactly \eqref{eq:opd.rethinking-cand-advantage}.
     \item Lastly, the code reached to \href{https://github.com/Thinking-Space/Rethinking-OPD/blob/ac26e38d6f1572eb027597b48a9f4e01f6915ef8/verl/verl/trainer/ppo/ray_trainer.py#L2259}{\texttt{self.actor\_rollout\_wg.update\_actor}}, which is the entrypoint of the PPO update. If the FSDP backend is used, then the update done by \href{https://github.com/Thinking-Space/Rethinking-OPD/blob/ac26e38d6f1572eb027597b48a9f4e01f6915ef8/verl/verl/workers/fsdp_workers.py#L880}{self.actor.update\_policy}.
+    With a 3D advantage, the actor recomputes $\log p_t(i)$ for the stored candidate
+    ids, \icode{log_prob_for_loss = topk_log_probs}, and the
+    \href{https://github.com/Thinking-Space/Rethinking-OPD/blob/ac26e38d6f1572eb027597b48a9f4e01f6915ef8/verl/verl/trainer/ppo/core_algos.py#L1118}{PPO loss}
+    is applied per candidate and then summed over the candidates:
+    \begin{codeblock}[language=Python]
+# log_prob, old_log_prob, advantages: (bsz, response_length, top_k)
+ratio = torch.exp(log_prob - old_log_prob)
+pg_losses1 = -advantages * ratio
+pg_losses2 = -advantages * torch.clamp(ratio, 1 - cliprange_low, 1 + cliprange_high)
+pg_losses = torch.maximum(pg_losses1, pg_losses2)   # (+ dual-clip for A < 0)
+pg_losses = torch.sum(pg_losses, dim=-1)            # sum over the top_k candidates
+pg_loss = agg_loss(pg_losses, response_mask, loss_agg_mode)
+    \end{codeblock}
+    This is the candidate PPO loss \eqref{eq:opd.rethinking-ppo}, aggregated over response
+    positions as specified by \texttt{loss\_agg\_mode}. The loop has the same structure as in
+    Section~\ref{sec:opd.as-ppo}
+    (\href{https://github.com/Thinking-Space/Rethinking-OPD/blob/ac26e38d6f1572eb027597b48a9f4e01f6915ef8/verl/verl/workers/actor/dp_actor.py#L787-L793}{mini-batches $\times$ \texttt{ppo\_epochs}},
+    one optimizer step per mini-batch), with two differences. First, the advantage
+    \eqref{eq:opd.rethinking-advantage} is computed once per PPO iteration from stored
+    log-probabilities, so later optimizer steps of the same iteration use a stale
+    $\delta_t(i)$ and $\bar p_t^{(S_t)}(i)$, unlike upstream VeRL. Second, when there is a
+    single mini-batch and \texttt{ppo\_epochs=1} (the \texttt{on\_policy} flag), the code
+    sets \icode{old_log_prob = log_prob_for_loss.detach()}, so $w_{t,i}\equiv 1$ by
+    construction. At the first optimizer step of each PPO iteration (in particular, in the
+    \texttt{on\_policy} case), the gradient is therefore $g_t$ of
+    \eqref{eq:opd.rethinking-grad}, as established in Section~\ref{sec:opd.rethinking-method}.
 
 \end{enumerate}
 
-
+\subsubsection{Other unvisited reference}
 \href{https://zoeyli.com/reinforcement%20learning/implementing-on-policy-distillation/}{Implementing On-Policy Distillation: Lessons from Building OPD in VeRL}
 
 
 
 
-There's one \href{https://github.com/verl-project/verl/blob/release/v0.9.0/verl/trainer/distillation/fsdp/losses.py}{implementation trick} for the top-k OPD: Compute selected log-probabilities without materializing an additional full [B,T,V] log-probability tensor.
+% There's one \href{https://github.com/verl-project/verl/blob/release/v0.9.0/verl/trainer/distillation/fsdp/losses.py}{implementation trick} for the top-k OPD: Compute selected log-probabilities without materializing an additional full [B,T,V] log-probability tensor.
 
 % ## Discussion
 
